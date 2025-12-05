@@ -226,6 +226,20 @@ class GDI32(api.ApiHandler):
         """
         return 0
 
+        return 0
+
+    @apihook('CreateDCW', argc=4)
+    def CreateDCW(self, emu, argv, ctx={}):
+        """
+        HDC CreateDCW(
+        LPCWSTR        pwszDriver,
+        LPCWSTR        pwszDevice,
+        LPCWSTR        pszPort,
+        const DEVMODEW *pdm
+        );
+        """
+        return 0
+
     @apihook('GetTextCharacterExtra', argc=1)
     def GetTextCharacterExtra(self, emu, argv, ctx={}):
         """

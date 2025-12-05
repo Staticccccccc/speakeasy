@@ -81,3 +81,25 @@ class OleAut32(api.ApiHandler):
         """
         argv[0] = self.read_wide_string(argv[0])
         return
+
+    @apihook('VariantClear', argc=1, ordinal=9)
+    def VariantClear(self, emu, argv, ctx={}):
+        """
+        HRESULT VariantClear(
+          VARIANTARG *pvarg
+        );
+        """
+        pvarg, = argv
+        
+        if pvarg:
+            # Clear the variant by zeroing it out
+            # 32-bit VARIANT is 16 bytes, 64-bit is 24 bytes
+            ptr_size = emu.get_ptr_size()
+            if ptr_size == 4:
+                size = 16
+            else:
+                size = 24
+            
+            self.mem_write(pvarg, b'\x00' * size)
+
+        return 0 # S_OK

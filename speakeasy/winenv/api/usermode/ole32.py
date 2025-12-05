@@ -122,9 +122,13 @@ class Ole32(api.ApiHandler):
                     self.mem_write(pv, ci.address.to_bytes(emu.get_ptr_size(), 'little'))
                     self.mem_write(ppv, pv.to_bytes(emu.get_ptr_size(), 'little'))
             else:
-                self.emu.logger.info('Unsupported COM IID %s', riid)
+                if self.emu.logger:
+                    self.emu.logger.info('Unsupported COM IID %s', riid)
+                rv = windefs.E_NOINTERFACE
         else:
-            self.emu.logger.info('Unsupported COM CLSID %s', clsid_str)
+            if self.emu.logger:
+                self.emu.logger.info('Unsupported COM CLSID %s', clsid_str)
+            rv = 0x80040154 # REGDB_E_CLASSNOTREG
 
         return rv
 

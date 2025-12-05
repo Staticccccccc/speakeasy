@@ -364,3 +364,27 @@ class WinHttp(api.ApiHandler):
         rv = 1
 
         return rv
+
+    @apihook('WinHttpQueryDataAvailable', argc=2, conv=_arch.CALL_CONV_STDCALL)
+    def WinHttpQueryDataAvailable(self, emu, argv, ctx={}):
+        """
+        BOOLAPI WinHttpQueryDataAvailable(
+          IN HINTERNET hRequest,
+          OUT LPDWORD  lpdwNumberOfBytesAvailable
+        );
+        """
+        hRequest, lpdwNumberOfBytesAvailable = argv
+        rv = 1
+
+        req = self.netman.get_wininet_object(hRequest)
+        if not req:
+            return 0
+
+        avail = 0
+        if req.get_response():
+            avail = req.get_response_size()
+
+        if lpdwNumberOfBytesAvailable:
+            self.mem_write(lpdwNumberOfBytesAvailable, (avail.to_bytes(4, 'little')))
+
+        return rv

@@ -93,3 +93,81 @@ class ComApi(api.ApiHandler):
 
         # not implemented so returning -1
         return -1
+
+    @apihook('IWinHttpRequest.Open', argc=6)
+    def IWinHttpRequest_Open(self, emu, argv, ctx={}):
+        """
+        HRESULT Open(
+            BSTR    Method,
+            BSTR    Url,
+            VARIANT Async,
+            VARIANT User,
+            VARIANT Password,
+            VARIANT LogonPolicy
+        );
+        """
+        ptr, method, url, async_v, user, password, logon = argv
+        method_str = self.read_wide_string(method)
+        url_str = self.read_wide_string(url)
+        
+        if self.emu.logger:
+            self.emu.logger.info('IWinHttpRequest::Open(%s, %s)', method_str, url_str)
+
+        return comdefs.S_OK
+
+    @apihook('IWinHttpRequest.Send', argc=2)
+    def IWinHttpRequest_Send(self, emu, argv, ctx={}):
+        """
+        HRESULT Send(
+            VARIANT Body
+        );
+        """
+        if self.emu.logger:
+            self.emu.logger.info('IWinHttpRequest::Send')
+        return comdefs.S_OK
+
+    @apihook('IWinHttpRequest.SetRequestHeader', argc=3)
+    def IWinHttpRequest_SetRequestHeader(self, emu, argv, ctx={}):
+        """
+        HRESULT SetRequestHeader(
+            BSTR Header,
+            BSTR Value
+        );
+        """
+        ptr, header, value = argv
+        header_str = self.read_wide_string(header)
+        value_str = self.read_wide_string(value)
+
+        if self.emu.logger:
+            self.emu.logger.info('IWinHttpRequest::SetRequestHeader(%s, %s)', header_str, value_str)
+        
+        return comdefs.S_OK
+
+    @apihook('IWinHttpRequest.ResponseText', argc=2)
+    def IWinHttpRequest_ResponseText(self, emu, argv, ctx={}):
+        """
+        HRESULT ResponseText(
+            BSTR *Body
+        );
+        """
+        ptr, body = argv
+        
+        # Return empty string or mock data
+        # For now, just empty string
+        s = 'Mock Response'.encode('utf-16le') + b'\x00\x00'
+        buf = self.mem_alloc(len(s), tag='api.IWinHttpRequest.ResponseText')
+        self.mem_write(buf, s)
+        self.mem_write(body, buf.to_bytes(emu.get_ptr_size(), 'little'))
+
+        return comdefs.S_OK
+
+    @apihook('IWinHttpRequest.Status', argc=2)
+    def IWinHttpRequest_Status(self, emu, argv, ctx={}):
+        """
+        HRESULT Status(
+            long *Status
+        );
+        """
+        ptr, status = argv
+        self.mem_write(status, (200).to_bytes(4, 'little'))
+        return comdefs.S_OK

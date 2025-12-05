@@ -91,6 +91,52 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('RegOpenKeyW', argc=3, conv=_arch.CALL_CONV_STDCALL)
+    def RegOpenKeyW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegOpenKeyW(
+          HKEY   hKey,
+          LPCWSTR lpSubKey,
+          PHKEY  phkResult
+        );
+        '''
+
+        hKey, lpSubKey, phkResult = argv
+        rv = windefs.ERROR_SUCCESS
+        hnd = 0
+
+        hkey_name = regdefs.get_hkey_type(hKey)
+        if hkey_name:
+            argv[0] = hkey_name
+            if not hnd and not lpSubKey:
+                hnd = hKey
+        else:
+            key_obj = emu.regman.get_key_from_handle(hKey)
+            if not key_obj:
+                return windefs.ERROR_PATH_NOT_FOUND
+            hkey_name = key_obj.path
+
+        cw = 2
+        if lpSubKey:
+            lpSubKey = self.read_mem_string(lpSubKey, cw)
+            argv[1] = lpSubKey
+
+            if hkey_name and lpSubKey:
+                if not lpSubKey.startswith('\\'):
+                    lpSubKey = '\\' + lpSubKey
+                lpSubKey = hkey_name + lpSubKey
+
+            hnd = self.reg_open_key(lpSubKey, create=False)
+            if not hnd:
+                rv = windefs.ERROR_PATH_NOT_FOUND
+
+            self.log_registry_access(lpSubKey, REG_OPEN, handle=hnd)
+
+        if phkResult and hnd:
+            self.mem_write(phkResult, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+        return rv
+
     @apihook('RegOpenKeyEx', argc=5, conv=_arch.CALL_CONV_STDCALL)
     def RegOpenKeyEx(self, emu, argv, ctx={}):
         '''
@@ -115,6 +161,50 @@ class AdvApi32(api.ApiHandler):
                 hnd = hKey
 
         cw = self.get_char_width(ctx)
+        if lpSubKey:
+            lpSubKey = self.read_mem_string(lpSubKey, cw)
+            argv[1] = lpSubKey
+
+            if hkey_name and lpSubKey:
+                if not lpSubKey.startswith('\\'):
+                    lpSubKey = '\\' + lpSubKey
+                lpSubKey = hkey_name + lpSubKey
+
+            hnd = self.reg_open_key(lpSubKey, create=False)
+            if not hnd:
+                rv = windefs.ERROR_PATH_NOT_FOUND
+
+            self.log_registry_access(lpSubKey, REG_OPEN, handle=hnd)
+
+        if phkResult and hnd:
+            self.mem_write(phkResult, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+        return rv
+
+    @apihook('RegOpenKeyExW', argc=5, conv=_arch.CALL_CONV_STDCALL)
+    def RegOpenKeyExW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegOpenKeyExW(
+          HKEY   hKey,
+          LPCWSTR lpSubKey,
+          DWORD  ulOptions,
+          REGSAM samDesired,
+          PHKEY  phkResult
+        );
+        '''
+
+        hKey, lpSubKey, ulOptions, samDesired, phkResult = argv
+        rv = windefs.ERROR_SUCCESS
+
+        hnd = 0
+
+        hkey_name = regdefs.get_hkey_type(hKey)
+        if hkey_name:
+            argv[0] = hkey_name
+            if not hnd and not lpSubKey:
+                hnd = hKey
+
+        cw = 2
         if lpSubKey:
             lpSubKey = self.read_mem_string(lpSubKey, cw)
             argv[1] = lpSubKey
@@ -203,6 +293,74 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('RegQueryValueExW', argc=6, conv=_arch.CALL_CONV_STDCALL)
+    def RegQueryValueExW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegQueryValueExW(
+          HKEY    hKey,
+          LPCWSTR  lpValueName,
+          LPDWORD lpReserved,
+          LPDWORD lpType,
+          LPBYTE  lpData,
+          LPDWORD lpcbData
+        );
+        '''
+
+        hKey, lpValueName, lpReserved, lpType, lpData, lpcbData = argv
+        rv = windefs.ERROR_SUCCESS
+
+        cw = 2
+        if lpValueName:
+            lpValueName = self.read_mem_string(lpValueName, cw)
+            argv[1] = lpValueName
+
+        type_name = regdefs.get_value_type(lpType)
+        if type_name:
+            argv[3] = type_name
+
+        length = 0
+        if lpcbData:
+            length = self.mem_read(lpcbData, 4)
+            length = int.from_bytes(length, 'little')
+            argv[5] = length
+
+        key = self.reg_get_key(hKey)
+        if key:
+            val = key.get_value(lpValueName)
+            if val:
+                output = b''
+                typ = val.get_type()
+                data = val.get_data()
+                if typ == 'REG_SZ':
+                    output = data.encode('utf-16le')
+
+                if lpcbData:
+                    self.mem_write(lpcbData, len(output).to_bytes(4, 'little'))
+
+                if len(output) > length:
+                    rv = windefs.ERROR_INSUFFICIENT_BUFFER
+                else:
+                    if lpData:
+                        self.mem_write(lpData, output)
+
+            # For now, return an empty buffer
+            else:
+                output = b'\x00' * length
+                if lpData:
+                    try:
+                        self.mem_write(lpData, output)
+                    except Exception:
+                        return windefs.ERROR_INVALID_PARAMETER
+                if lpcbData:
+                    self.mem_write(lpcbData, len(output).to_bytes(4, 'little'))
+                rv = windefs.ERROR_SUCCESS
+
+            kp = key.get_path()
+            self.log_registry_access(kp, REG_READ, value_name=lpValueName, size=length,
+                                     buffer=lpData)
+
+        return rv
+
     @apihook('RegCloseKey', argc=1, conv=_arch.CALL_CONV_STDCALL)
     def RegCloseKey(self, emu, argv, ctx={}):
         '''
@@ -235,6 +393,25 @@ class AdvApi32(api.ApiHandler):
 
         _argv = argv + [0, 0, 0, 0]
         rv = self.RegEnumKeyEx(emu, _argv, ctx)
+        argv[:] = _argv[: 4]
+
+        return rv
+
+    @apihook('RegEnumKeyW', argc=4, conv=_arch.CALL_CONV_STDCALL)
+    def RegEnumKeyW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegEnumKeyW(
+          HKEY  hKey,
+          DWORD dwIndex,
+          LPWSTR lpName,
+          DWORD cchName
+        );
+        '''
+
+        hKey, dwIndex, lpName, cchName = argv
+
+        _argv = argv + [0, 0, 0, 0]
+        rv = self.RegEnumKeyExW(emu, _argv, ctx)
         argv[:] = _argv[: 4]
 
         return rv
@@ -280,6 +457,44 @@ class AdvApi32(api.ApiHandler):
             self.log_registry_access(key.get_path(), REG_LIST)
         return rv
 
+    @apihook('RegEnumKeyExW', argc=8, conv=_arch.CALL_CONV_STDCALL)
+    def RegEnumKeyExW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegEnumKeyExW(
+            HKEY      hKey,
+            DWORD     dwIndex,
+            LPWSTR     lpName,
+            LPDWORD   lpcchName,
+            LPDWORD   lpReserved,
+            LPWSTR     lpClass,
+            LPDWORD   lpcchClass,
+            PFILETIME lpftLastWriteTime
+        );
+        '''
+
+        hKey, dwIndex, lpName, cchName, res, pcls, cchcls, last_write = argv
+
+        cw = 2
+        rv = windefs.ERROR_INVALID_HANDLE
+        if hKey:
+            key = self.reg_get_key(hKey)
+            argv[0] = key.get_path()
+            if not key:
+                rv = windefs.ERROR_INVALID_HANDLE
+            else:
+                subkeys = self.reg_get_subkeys(key)
+                if (dwIndex + 1) > len(subkeys):
+                    rv = windefs.ERROR_NO_MORE_ITEMS
+                else:
+                    if lpName:
+                        sk = subkeys[dwIndex]
+                        name = sk.get_path()
+                        name = name.encode('utf-16le')
+                        self.mem_write(lpName, name)
+                        rv = windefs.ERROR_SUCCESS
+            self.log_registry_access(key.get_path(), REG_LIST)
+        return rv
+
     @apihook('RegCreateKey', argc=3)
     def RegCreateKey(self, emu, argv, ctx={}):
         """
@@ -310,6 +525,36 @@ class AdvApi32(api.ApiHandler):
                     rv = windefs.ERROR_SUCCESS
         return rv
 
+    @apihook('RegCreateKeyW', argc=3)
+    def RegCreateKeyW(self, emu, argv, ctx={}):
+        """
+        LSTATUS RegCreateKeyW(
+            HKEY    hKey,
+            LPCWSTR lpSubKey,
+            PHKEY   phkResult
+        );
+        """
+        hkey, lpSubKey, phkResult = argv
+        rv = windefs.ERROR_INVALID_HANDLE
+        if hkey:
+            key = self.reg_get_key(hkey)
+            argv[0] = key.get_path()
+            if not key:
+                rv = windefs.ERROR_INVALID_HANDLE
+            else:
+                cw = 2
+                if lpSubKey:
+                    lpSubKey = self.read_mem_string(lpSubKey, cw)
+                    argv[1] = lpSubKey
+                    sub_key_path = key.get_path() + '\\' + lpSubKey
+                    self.emu.reg_create_key(sub_key_path)
+                    self.log_registry_access(sub_key_path, REG_CREATE)
+                else:
+                    hkey = (hkey).to_bytes(self.get_ptr_size(), 'little')
+                    self.mem_write(phkResult, hkey)
+                    rv = windefs.ERROR_SUCCESS
+        return rv
+
     @apihook('RegQueryInfoKey', argc=12, conv=_arch.CALL_CONV_STDCALL)
     def RegQueryInfoKey(self, emu, argv, ctx={}):
         # TODO: stub
@@ -317,6 +562,41 @@ class AdvApi32(api.ApiHandler):
         LSTATUS RegQueryInfoKeyA(
           HKEY      hKey,
           LPSTR     lpClass,
+          LPDWORD   lpcchClass,
+          LPDWORD   lpReserved,
+          LPDWORD   lpcSubKeys,
+          LPDWORD   lpcbMaxSubKeyLen,
+          LPDWORD   lpcbMaxClassLen,
+          LPDWORD   lpcValues,
+          LPDWORD   lpcbMaxValueNameLen,
+          LPDWORD   lpcbMaxValueLen,
+          LPDWORD   lpcbSecurityDescriptor,
+          PFILETIME lpftLastWriteTime
+        );
+        '''
+
+        hKey, lpClass, lpcchClass, _, subkeys, max_subkey_len, max_class_len, \
+            values, max_value_name_len, max_value_len, sec_desc, last_write = argv
+
+        rv = windefs.ERROR_SUCCESS
+
+        hkey_name = regdefs.get_hkey_type(hKey)
+        if hkey_name:
+            argv[0] = hkey_name
+
+        key = self.reg_get_key(hKey)
+        if not key:
+            rv = windefs.ERROR_INVALID_HANDLE
+
+        return rv
+
+    @apihook('RegQueryInfoKeyW', argc=12, conv=_arch.CALL_CONV_STDCALL)
+    def RegQueryInfoKeyW(self, emu, argv, ctx={}):
+        # TODO: stub
+        '''
+        LSTATUS RegQueryInfoKeyW(
+          HKEY      hKey,
+          LPWSTR     lpClass,
           LPDWORD   lpcchClass,
           LPDWORD   lpReserved,
           LPDWORD   lpcSubKeys,
@@ -505,11 +785,73 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('StartServiceCtrlDispatcherW', argc=1)
+    def StartServiceCtrlDispatcherW(self, emu, argv, ctx={}):
+        '''
+        BOOL StartServiceCtrlDispatcherW(
+          const SERVICE_TABLE_ENTRYW *lpServiceStartTable
+        );
+        '''
+        lpServiceStartTable, = argv
+
+        cw = 2
+
+        ste = self.win.SERVICE_TABLE_ENTRY(emu.get_ptr_size())
+        entry = self.mem_cast(ste, lpServiceStartTable)
+
+        argv[0] = "lpServiceStartTable=["
+
+        while (entry.lpServiceName != windefs.NULL or
+                entry.lpServiceProc != windefs.NULL):
+            # Get the service name
+            if entry.lpServiceName != windefs.NULL:
+                name = self.read_mem_string(entry.lpServiceName, cw) # noqa
+                argv[0] += " {{ lpServiceName={}".format(name)
+            else:
+                argv[0] += " { lpServiceName=NULL"
+            # Get the ServiceMain function
+            if entry.lpServiceProc != windefs.NULL:
+                service_main = entry.lpServiceProc
+                argv[0] += ", lpServiceProc={} }} ".format(hex(service_main))
+                handle, obj = self.create_thread(service_main, windefs.NULL,
+                                                 emu.get_current_process())
+            else:
+                argv[0] += ", lpServiceProc=NULL } "
+            # next entry
+            lpServiceStartTable += self.sizeof(ste)
+            ste = self.win.SERVICE_TABLE_ENTRY(emu.get_ptr_size())
+            entry = self.mem_cast(ste, lpServiceStartTable)
+
+        argv[0] += "]"
+
+        rv = True
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return rv
+
     @apihook('RegisterServiceCtrlHandler', argc=2)
     def RegisterServiceCtrlHandler(self, emu, argv, ctx={}):
         '''
         SERVICE_STATUS_HANDLE RegisterServiceCtrlHandlerA(
             LPCSTR             lpServiceName,
+            LPHANDLER_FUNCTION lpHandlerProc
+            );
+        '''
+
+        lpServiceName, lpHandlerProc = argv
+
+        # dummy SERVICE_STATUS_HANDLE
+        self.service_status_handle += 1
+
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return self.service_status_handle
+
+    @apihook('RegisterServiceCtrlHandlerW', argc=2)
+    def RegisterServiceCtrlHandlerW(self, emu, argv, ctx={}):
+        '''
+        SERVICE_STATUS_HANDLE RegisterServiceCtrlHandlerW(
+            LPCWSTR             lpServiceName,
             LPHANDLER_FUNCTION lpHandlerProc
             );
         '''
@@ -535,6 +877,19 @@ class AdvApi32(api.ApiHandler):
         lpServiceName, lpHandlerProc, lpContext = argv
 
         return self.RegisterServiceCtrlHandler(self, emu, [lpServiceName, lpHandlerProc], ctx)
+
+    @apihook('RegisterServiceCtrlHandlerExW', argc=3)
+    def RegisterServiceCtrlHandlerExW(self, emu, argv, ctx={}):
+        '''
+        SERVICE_STATUS_HANDLE RegisterServiceCtrlHandlerExW(
+            LPCWSTR               lpServiceName,
+            LPHANDLER_FUNCTION_EX lpHandlerProc,
+            LPVOID                lpContext
+        );
+        '''
+        lpServiceName, lpHandlerProc, lpContext = argv
+
+        return self.RegisterServiceCtrlHandlerW(self, emu, [lpServiceName, lpHandlerProc], ctx)
 
     @apihook('SetServiceStatus', argc=2)
     def SetServiceStatus(self, emu, argv, ctx={}):
@@ -573,6 +928,22 @@ class AdvApi32(api.ApiHandler):
         SC_HANDLE OpenSCManager(
           LPCSTR lpMachineName,
           LPCSTR lpDatabaseName,
+          DWORD  dwDesiredAccess
+        );
+        '''
+        lpMachineName, lpDatabaseName, dwDesiredAccess = argv
+
+        hScm = self.mem_alloc(size=8)
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return hScm
+
+    @apihook('OpenSCManagerW', argc=3)
+    def OpenSCManagerW(self, emu, argv, ctx={}):
+        '''
+        SC_HANDLE OpenSCManagerW(
+          LPCWSTR lpMachineName,
+          LPCWSTR lpDatabaseName,
           DWORD  dwDesiredAccess
         );
         '''
@@ -624,6 +995,47 @@ class AdvApi32(api.ApiHandler):
 
         return hSvc
 
+    @apihook('CreateServiceW', argc=13)
+    def CreateServiceW(self, emu, argv, ctx={}):
+        '''
+        SC_HANDLE CreateServiceW(
+          SC_HANDLE hSCManager,
+          LPCWSTR    lpServiceName,
+          LPCWSTR    lpDisplayName,
+          DWORD     dwDesiredAccess,
+          DWORD     dwServiceType,
+          DWORD     dwStartType,
+          DWORD     dwErrorControl,
+          LPCWSTR    lpBinaryPathName,
+          LPCWSTR    lpLoadOrderGroup,
+          LPDWORD   lpdwTagId,
+          LPCWSTR    lpDependencies,
+          LPCWSTR    lpServiceStartName,
+          LPCWSTR    lpPassword
+        );
+        '''
+        (hScm, svc_name, disp_name, access,
+         svc_type, start_type, error_ctrl, bin_path,
+         load_group, tag_id, deps, svc_start_name,
+         password) = argv
+
+        cw = 2
+
+        if svc_name:
+            _sname = self.read_mem_string(svc_name, cw)
+            argv[1] = _sname
+        if disp_name:
+            _dname = self.read_mem_string(disp_name, cw)
+            argv[2] = _dname
+        if bin_path:
+            _bpname = self.read_mem_string(bin_path, cw)
+            argv[7] = _bpname
+
+        hSvc = self.mem_alloc(size=8)
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return hSvc
+
     @apihook('StartService', argc=3)
     def StartService(self, emu, argv, ctx={}):
         '''
@@ -631,6 +1043,23 @@ class AdvApi32(api.ApiHandler):
           SC_HANDLE hService,
           DWORD     dwNumServiceArgs,
           LPCSTR    *lpServiceArgVectors
+        );
+        '''
+        hService, dwNumServiceArgs, lpServiceArgVectors = argv
+
+        rv = 1
+
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return rv
+
+    @apihook('StartServiceW', argc=3)
+    def StartServiceW(self, emu, argv, ctx={}):
+        '''
+        BOOL StartServiceW(
+          SC_HANDLE hService,
+          DWORD     dwNumServiceArgs,
+          LPCWSTR    *lpServiceArgVectors
         );
         '''
         hService, dwNumServiceArgs, lpServiceArgVectors = argv
@@ -696,6 +1125,23 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('ChangeServiceConfig2W', argc=3)
+    def ChangeServiceConfig2W(self, emu, argv, ctx={}):
+        '''
+        BOOL ChangeServiceConfig2W(
+          SC_HANDLE hService,
+          DWORD     dwInfoLevel,
+          LPVOID    lpInfo
+        );
+        '''
+        hService, dwInfoLevel, lpInfo = argv
+
+        rv = 1
+
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return rv
+
     @apihook('SystemFunction036', argc=2)
     def RtlGenRandom(self, emu, argv, ctx={}):
         '''
@@ -728,6 +1174,39 @@ class AdvApi32(api.ApiHandler):
         phProv, szContainer, szProvider, dwProvType, dwFlags = argv
         cont_str, prov_str = '', ''
         cw = self.get_char_width(ctx)
+        rv = False
+
+        if szContainer:
+            cont_str = self.read_mem_string(szContainer, cw)
+            argv[1] = cont_str
+        if szProvider:
+            prov_str = self.read_mem_string(szProvider, cw)
+            argv[2] = prov_str
+
+        cm = emu.get_crypt_manager()
+        hnd = cm.crypt_open(cname=cont_str, pname=prov_str, ptype=dwProvType, flags=dwFlags)
+
+        if hnd and phProv:
+            self.mem_write(phProv, hnd.to_bytes(emu.get_ptr_size(), 'little'))
+            rv = True
+            emu.set_last_error(windefs.ERROR_SUCCESS)
+
+        return rv
+
+    @apihook('CryptAcquireContextW', argc=5)
+    def CryptAcquireContextW(self, emu, argv, ctx={}):
+        '''
+        BOOL CryptAcquireContextW(
+            HCRYPTPROV *phProv,
+            LPCWSTR     szContainer,
+            LPCWSTR     szProvider,
+            DWORD      dwProvType,
+            DWORD      dwFlags
+        );
+        '''
+        phProv, szContainer, szProvider, dwProvType, dwFlags = argv
+        cont_str, prov_str = '', ''
+        cw = 2
         rv = False
 
         if szContainer:
@@ -869,6 +1348,31 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('GetUserNameW', argc=2)
+    def GetUserNameW(self, emu, argv, ctx={}):
+        '''
+        BOOL GetUserNameW(
+            LPWSTR   lpBuffer,
+            LPDWORD pcbBuffer
+        );
+        '''
+        lpBuffer, pcbBuffer = argv
+        rv = False
+        cw = 2
+
+        user = emu.get_user()
+        user_name = user.get('name')
+        argv[0] = user_name
+
+        if lpBuffer:
+            out = user_name.encode('utf-16le')
+            self.mem_write(lpBuffer, out)
+            rv = True
+        if pcbBuffer:
+            self.mem_write(pcbBuffer, (len(user_name)).to_bytes(4, 'little'))
+
+        return rv
+
     @apihook('LookupPrivilegeValue', argc=3)
     def LookupPrivilegeValue(self, emu, argv, ctx={}):
         '''
@@ -881,6 +1385,29 @@ class AdvApi32(api.ApiHandler):
         sysname, name, luid = argv
         rv = False
         cw = self.get_char_width(ctx)
+
+        if sysname:
+            sysname = self.read_mem_string(sysname, cw)
+            argv[0] = sysname
+        if name:
+            name = self.read_mem_string(name, cw)
+            argv[1] = name
+            rv = True
+
+        return rv
+
+    @apihook('LookupPrivilegeValueW', argc=3)
+    def LookupPrivilegeValueW(self, emu, argv, ctx={}):
+        '''
+        BOOL LookupPrivilegeValueW(
+            LPCWSTR lpSystemName,
+            LPCWSTR lpName,
+            PLUID  lpLuid
+        );
+        '''
+        sysname, name, luid = argv
+        rv = False
+        cw = 2
 
         if sysname:
             sysname = self.read_mem_string(sysname, cw)
@@ -1066,6 +1593,80 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('LookupAccountNameW', argc=7)
+    def LookupAccountNameW(self, emu, argv, ctx={}):
+        '''
+        BOOL LookupAccountNameW(
+          [in, optional]  LPCWSTR        lpSystemName,
+          [in]            LPCWSTR        lpAccountName,
+          [out, optional] PSID          Sid,
+          [in, out]       LPDWORD       cbSid,
+          [out, optional] LPWSTR         ReferencedDomainName,
+          [in, out]       LPDWORD       cchReferencedDomainName,
+          [out]           PSID_NAME_USE peUse
+        );
+        '''
+
+        ptr_sysname, ptr_acctname, ptr_sid, ptr_cbsid, ptr_domname, ptr_cchdomname, ptr_peuse = argv
+        rv = 0
+
+        cw = 2
+
+        if ptr_sysname:
+            sn = self.read_mem_string(ptr_sysname, cw)
+            argv[0] = sn
+
+        if not ptr_acctname:
+            return rv
+
+        acctname = self.read_mem_string(ptr_acctname, cw)
+        argv[1] = acctname
+
+        user = emu.get_user().get('name')
+        # Currently only supporting user SIDs specified in the config
+        if user != acctname:
+            return rv
+
+        str_sid = emu.get_user().get('sid')
+        if not str_sid:
+            return rv
+
+        argv[2] = str_sid
+        sid_struct = windefs.convert_sid_str_to_struct(emu.get_ptr_size(), str_sid)
+        side_struct_size = sid_struct.sizeof()
+
+        cbsid = self.mem_read(ptr_cbsid, 4)
+        cbsid = int.from_bytes(cbsid, 'little')
+        argv[3] = cbsid
+        if not cbsid:
+            self.mem_write(ptr_cbsid, side_struct_size.to_bytes(4, 'little'))
+            return rv
+
+        if cbsid < side_struct_size:
+            return rv
+
+        domain = emu.get_domain()
+        cchdomname = self.mem_read(ptr_cchdomname, 4)
+        cbcchdomname = int.from_bytes(cchdomname, 'little')
+        argv[5] = cbcchdomname
+        if not cbcchdomname:
+            buf_size = len(domain) + 1
+            self.mem_write(ptr_cchdomname, buf_size.to_bytes(4, 'little'))
+            return rv
+
+        rv = 1
+
+        self.mem_write(ptr_sid, self.get_bytes(sid_struct))
+
+        self.write_mem_string(domain, ptr_domname, cw)
+        argv[4] = domain
+
+        # Currently only supporting user SIDs (SidTypeUser = 1)
+        self.mem_write(ptr_peuse, (1).to_bytes(4, 'little'))
+        argv[6] = 1
+
+        return rv
+
     @apihook('LookupAccountSid', argc=7)
     def LookupAccountSid(self, emu, argv, ctx={}):
         '''
@@ -1083,6 +1684,43 @@ class AdvApi32(api.ApiHandler):
         rv = False
 
         cw = self.get_char_width(ctx)
+
+        if not cchname or not cchdomname:
+            return rv
+
+        name_size = self.mem_read(cchname, 4)
+        name_size = int.from_bytes(name_size, 'little')
+
+        dom_size = self.mem_read(cchdomname, 4)
+        dom_size = int.from_bytes(dom_size, 'little')
+
+        self.write_mem_string('myuser', name, cw)
+        self.write_mem_string('mydomain', domname, cw)
+        rv = True
+
+        if sysname:
+            sn = self.read_mem_string(sysname, cw)
+            argv[0] = sn
+
+        return rv
+
+    @apihook('LookupAccountSidW', argc=7)
+    def LookupAccountSidW(self, emu, argv, ctx={}):
+        '''
+        BOOL LookupAccountSidW(
+            LPCWSTR        lpSystemName,
+            PSID          Sid,
+            LPWSTR         Name,
+            LPDWORD       cchName,
+            LPWSTR         ReferencedDomainName,
+            LPDWORD       cchReferencedDomainName,
+            PSID_NAME_USE peUse
+        );
+        '''
+        sysname, sid, name, cchname, domname, cchdomname, peuse = argv
+        rv = False
+
+        cw = 2
 
         if not cchname or not cchdomname:
             return rv
@@ -1123,6 +1761,57 @@ class AdvApi32(api.ApiHandler):
         token, app, cmd, pa, ta, inherit, flags, env, cd, si, ppi = argv
 
         cw = self.get_char_width(ctx)
+        cmdstr = ''
+        appstr = ''
+        if app:
+            appstr = self.read_mem_string(app, cw)
+            argv[1] = appstr
+        if cmd:
+            cmdstr = self.read_mem_string(cmd, cw)
+            if not appstr:
+                appstr = cmdstr.split(' ')[0]
+            argv[2] = cmdstr
+
+        proc = emu.create_process(path=appstr, cmdline=cmdstr)
+        proc_hnd = self.get_object_handle(proc)
+
+        thread = proc.threads[0]
+        thread_hnd = self.get_object_handle(thread)
+
+        _pi = self.k32types.PROCESS_INFORMATION(emu.get_ptr_size())
+        data = self.mem_cast(_pi, ppi)
+        _pi.hProcess = proc_hnd
+        _pi.hThread = thread_hnd
+        _pi.dwProcessId = proc.pid
+        _pi.dwThreadId = thread.tid
+
+        self.mem_write(ppi, self.get_bytes(data))
+
+        rv = 1
+
+        self.log_process_event(proc, PROC_CREATE)
+        return rv
+
+    @apihook('CreateProcessAsUserW', argc=11, conv=_arch.CALL_CONV_STDCALL)
+    def CreateProcessAsUserW(self, emu, argv, ctx={}):
+        '''
+        BOOL CreateProcessAsUserW(
+          HANDLE                hToken,
+          LPCWSTR                lpApplicationName,
+          LPWSTR                 lpCommandLine,
+          LPSECURITY_ATTRIBUTES lpProcessAttributes,
+          LPSECURITY_ATTRIBUTES lpThreadAttributes,
+          BOOL                  bInheritHandles,
+          DWORD                 dwCreationFlags,
+          LPVOID                lpEnvironment,
+          LPCWSTR                lpCurrentDirectory,
+          LPSTARTUPINFOW        lpStartupInfo,
+          LPPROCESS_INFORMATION lpProcessInformation
+        );
+        '''
+        token, app, cmd, pa, ta, inherit, flags, env, cd, si, ppi = argv
+
+        cw = 2
         cmdstr = ''
         appstr = ''
         if app:
@@ -1403,6 +2092,67 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('RegGetValueW', argc=7, conv=_arch.CALL_CONV_STDCALL)
+    def RegGetValueW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegGetValueW(
+            HKEY    hkey,
+            LPCWSTR lpSubKey,
+            LPCWSTR lpValue,
+            DWORD   dwFlags,
+            LPDWORD pdwType,
+            PVOID   pvData,
+            LPDWORD pcbData
+            );
+        '''
+
+        hKey, lpSubKey, lpValue, dwFlags, lpType, lpData, lpcbData = argv
+        rv = windefs.ERROR_SUCCESS
+
+        cw = 2
+        if lpSubKey:
+            lpSubKey = self.read_mem_string(lpSubKey, cw)
+            argv[1] = lpSubKey
+
+        if lpValue:
+            lpValue = self.read_mem_string(lpValue, cw)
+            argv[2] = lpValue
+
+        type_name = regdefs.get_value_type(lpType)
+        if type_name:
+            argv[4] = type_name
+
+        length = 0
+        if lpcbData:
+            length = self.mem_read(lpcbData, 4)
+            length = int.from_bytes(length, 'little')
+
+        key = self.reg_get_key(hKey)
+        if key:
+            val = key.get_value(lpValue)
+            if val:
+                output = b''
+
+                if lpcbData:
+                    self.mem_write(lpcbData, len(output).to_bytes(4, 'little'))
+
+                if len(output) > length:
+                    rv = windefs.ERROR_INSUFFICIENT_BUFFER
+                else:
+                    self.mem_write(lpData, output)
+
+            # For now, return an empty buffer
+            else:
+                output = b'\x00' * length
+                self.mem_write(lpData, output)
+                rv = windefs.ERROR_SUCCESS
+
+            kp = key.get_path()
+            self.log_registry_access(kp, REG_READ, value_name=lpValue, size=length,
+                                     buffer=lpData)
+
+        return rv
+
     @apihook('EnumServicesStatus', argc=8, conv=_arch.CALL_CONV_STDCALL)
     def EnumServicesStatus(self, emu, argv, ctx={}):
         '''
@@ -1411,6 +2161,34 @@ class AdvApi32(api.ApiHandler):
           DWORD                  dwServiceType,
           DWORD                  dwServiceState,
           LPENUM_SERVICE_STATUSA lpServices,
+          DWORD                  cbBufSize,
+          LPDWORD                pcbBytesNeeded,
+          LPDWORD                lpServicesReturned,
+          LPDWORD                lpResumeHandle
+        );
+        '''
+        hSCManager, dwServiceType, dwServiceState, lpServices, cbBufSize, \
+            pcbBytesNeeded, lpServicesReturned, lpResumeHandle = argv
+
+        service_type_str = adv32.get_define_int(dwServiceType, 'SERVICE_')
+        if service_type_str:
+            argv[1] = service_type_str
+
+        service_state_str = adv32.get_define_int(dwServiceState, 'SERVICE_')
+        if service_state_str:
+            argv[2] = service_state_str
+
+        # TODO: Populate service status output
+        return 1
+
+    @apihook('EnumServicesStatusW', argc=8, conv=_arch.CALL_CONV_STDCALL)
+    def EnumServicesStatusW(self, emu, argv, ctx={}):
+        '''
+        BOOL EnumServicesStatusW(
+          SC_HANDLE              hSCManager,
+          DWORD                  dwServiceType,
+          DWORD                  dwServiceState,
+          LPENUM_SERVICE_STATUSW lpServices,
           DWORD                  cbBufSize,
           LPDWORD                pcbBytesNeeded,
           LPDWORD                lpServicesReturned,
@@ -1442,6 +2220,21 @@ class AdvApi32(api.ApiHandler):
         '''
         hSCManager, lpServiceName, dwDesiredAccess = argv
         cw = self.get_char_width(ctx)
+        svcname = self.read_mem_string(lpServiceName, cw)
+        argv[1] = svcname
+        return self.get_handle()
+
+    @apihook('OpenServiceW', argc=3, conv=_arch.CALL_CONV_STDCALL)
+    def OpenServiceW(self, emu, argv, ctx={}):
+        '''
+        SC_HANDLE OpenServiceW(
+          SC_HANDLE hSCManager,
+          LPCWSTR    lpServiceName,
+          DWORD     dwDesiredAccess
+        );
+        '''
+        hSCManager, lpServiceName, dwDesiredAccess = argv
+        cw = 2
         svcname = self.read_mem_string(lpServiceName, cw)
         argv[1] = svcname
         return self.get_handle()

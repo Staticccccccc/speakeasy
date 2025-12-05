@@ -26,6 +26,9 @@ CLSID_IWbemContext = '{674B6698-EE92-11D0-AD71-00C04FD8FDFF}'
 IID_IWbemLocator = '{DC12A687-737F-11CF-884D-00AA004B2E24}'
 IID_IWbemContext = '{44ACA674-E8FC-11D0-A07C-00C04FB68820}'
 
+CLSID_WinHttpRequest = '{2087C2F4-2CEF-4953-A8AB-34A51C4DAEEB}'
+IID_IWinHttpRequest = '{016FE2EC-B2C8-45F8-B23B-39E53A75396B}'
+
 
 class ComInterface(object):
     def __init__(self, iface, name, ptr_size):
@@ -105,11 +108,36 @@ class IWbemContext(EmuStruct):
         self.DeleteAll = Ptr
 
 
+class IWinHttpRequest(EmuStruct):
+    def __init__(self, ptr_size):
+        super().__init__(ptr_size)
+        self.IUnknown = IUnknown
+        self.SetProxy = Ptr
+        self.SetCredentials = Ptr
+        self.Open = Ptr
+        self.SetRequestHeader = Ptr
+        self.GetResponseHeader = Ptr
+        self.GetAllResponseHeaders = Ptr
+        self.Send = Ptr
+        self.WaitForResponse = Ptr
+        self.Abort = Ptr
+        self.SetTimeouts = Ptr
+        self.SetClientCertificate = Ptr
+        self.SetAutoLogonPolicy = Ptr
+        self.Status = Ptr
+        self.StatusText = Ptr
+        self.ResponseText = Ptr
+        self.ResponseBody = Ptr
+        self.ResponseStream = Ptr
+        self.Option = Ptr
+
+
 IFACE_TYPES = {'IUnknown': IUnknown,
                'IMalloc':  IMalloc,
                'IWbemLocator': IWbemLocator,
                'IWbemServices': IWbemServices,
-               'IWbemContext': IWbemContext}
+               'IWbemContext': IWbemContext,
+               'IWinHttpRequest': IWinHttpRequest}
 
 
 def get_define_int(define, prefix=''):
