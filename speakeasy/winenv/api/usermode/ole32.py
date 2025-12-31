@@ -171,3 +171,45 @@ class Ole32(api.ApiHandler):
             self.mem_write(lplpsz, ptr.to_bytes(emu.get_ptr_size(), 'little'))
 
         return rv
+
+    @apihook('CoTaskMemFree', argc=1)
+    def CoTaskMemFree(self, emu, argv, ctx={}):
+        """
+        void CoTaskMemFree(
+          LPVOID pv
+        );
+        """
+        pv, = argv
+        if pv:
+            self.mem_free(pv)
+        # No return value (void)
+
+    @apihook('CoTaskMemAlloc', argc=1)
+    def CoTaskMemAlloc(self, emu, argv, ctx={}):
+        """
+        LPVOID CoTaskMemAlloc(
+          SIZE_T cb
+        );
+        """
+        cb, = argv
+        if cb:
+            ptr = self.mem_alloc(cb, tag='api.CoTaskMemAlloc')
+            return ptr
+        return 0
+
+    @apihook('CoTaskMemRealloc', argc=2)
+    def CoTaskMemRealloc(self, emu, argv, ctx={}):
+        """
+        LPVOID CoTaskMemRealloc(
+          LPVOID pv,
+          SIZE_T cb
+        );
+        """
+        pv, cb = argv
+        if cb:
+            new_ptr = self.mem_alloc(cb, tag='api.CoTaskMemRealloc')
+            if pv:
+                # Copy old data if possible (simplified - just free old)
+                self.mem_free(pv)
+            return new_ptr
+        return 0

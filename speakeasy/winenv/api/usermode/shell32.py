@@ -517,3 +517,86 @@ class Shell32(api.ApiHandler):
 
         emu.write_mem_string(path, pszPath, 2)
         return 0
+
+    @apihook('SHGetKnownFolderPath', argc=4)
+    def SHGetKnownFolderPath(self, emu, argv, ctx={}):
+        """
+        HRESULT SHGetKnownFolderPath(
+          REFKNOWNFOLDERID rfid,
+          DWORD            dwFlags,
+          HANDLE           hToken,
+          PWSTR            *ppszPath
+        );
+        """
+        rfid, dwFlags, hToken, ppszPath = argv
+
+        # Known folder GUIDs (common ones)
+        # Read the GUID from memory (16 bytes)
+        path = "C:\\Windows\\Temp"  # Default fallback
+
+        if rfid:
+            guid_bytes = self.mem_read(rfid, 16)
+            # Convert to GUID string for matching
+            # GUID format: Data1 (4 bytes), Data2 (2 bytes), Data3 (2 bytes), Data4 (8 bytes)
+            import struct
+            d1, d2, d3 = struct.unpack('<IHH', guid_bytes[:8])
+            d4 = guid_bytes[8:16]
+            guid_str = '{%08X-%04X-%04X-%s-%s}' % (
+                d1, d2, d3,
+                d4[:2].hex().upper(),
+                d4[2:].hex().upper()
+            )
+            argv[0] = guid_str
+
+            # Map known folder GUIDs to paths
+            known_folders = {
+                # FOLDERID_RoamingAppData
+                '{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}': "C:\\Users\\{}\\AppData\\Roaming",
+                # FOLDERID_LocalAppData
+                '{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}': "C:\\Users\\{}\\AppData\\Local",
+                # FOLDERID_LocalAppDataLow
+                '{A520A1A4-1780-4FF6-BD18-167343C5AF16}': "C:\\Users\\{}\\AppData\\LocalLow",
+                # FOLDERID_Desktop
+                '{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}': "C:\\Users\\{}\\Desktop",
+                # FOLDERID_Documents
+                '{FDD39AD0-238F-46AF-ADB4-6C85480369C7}': "C:\\Users\\{}\\Documents",
+                # FOLDERID_Downloads
+                '{374DE290-123F-4565-9164-39C4925E467B}': "C:\\Users\\{}\\Downloads",
+                # FOLDERID_Profile
+                '{5E6C858F-0E22-4760-9AFE-EA3317B67173}': "C:\\Users\\{}",
+                # FOLDERID_ProgramData
+                '{62AB5D82-FDC1-4DC3-A9DD-070D1D495D97}': "C:\\ProgramData",
+                # FOLDERID_ProgramFiles
+                '{905E63B6-C1BF-494E-B29C-65B732D3D21A}': "C:\\Program Files",
+                # FOLDERID_ProgramFilesX86
+                '{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}': "C:\\Program Files (x86)",
+                # FOLDERID_System
+                '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}': "C:\\Windows\\System32",
+                # FOLDERID_Windows
+                '{F38BF404-1D43-42F2-9305-67DE0B28FC23}': "C:\\Windows",
+                # FOLDERID_Startup
+                '{B97D20BB-F46A-4C97-BA10-5E3608430854}': "C:\\Users\\{}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+                # FOLDERID_Programs
+                '{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}': "C:\\Users\\{}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs",
+                # FOLDERID_StartMenu
+                '{625B53C3-AB48-4EC1-BA1F-A1EF4146FC19}': "C:\\Users\\{}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu",
+                # FOLDERID_Fonts
+                '{FD228CB7-AE11-4AE3-864C-16F3910AB8FE}': "C:\\Windows\\Fonts",
+                # FOLDERID_CommonStartup
+                '{82A5EA35-D9CD-47C5-9629-E15D2F714E6E}': "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+            }
+
+            user_name = emu.get_user()['name']
+            if guid_str in known_folders:
+                path = known_folders[guid_str].format(user_name)
+
+        # Allocate memory for the path string (CoTaskMemAlloc style)
+        path_wide = (path + '\x00').encode('utf-16le')
+        path_ptr = self.mem_alloc(len(path_wide), tag='api.SHGetKnownFolderPath')
+        self.mem_write(path_ptr, path_wide)
+
+        # Write the pointer to ppszPath
+        if ppszPath:
+            self.mem_write(ppszPath, path_ptr.to_bytes(emu.get_ptr_size(), 'little'))
+
+        return windefs.S_OK  # 0

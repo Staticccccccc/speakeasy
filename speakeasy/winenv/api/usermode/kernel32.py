@@ -19,6 +19,8 @@ from speakeasy.errors import ApiEmuError
 from speakeasy.profiler import Run
 import speakeasy.winenv.defs.windows.windows as windefs
 import speakeasy.winenv.defs.windows.kernel32 as k32types
+import speakeasy.winenv.defs.registry.reg as regdefs
+from speakeasy.const import REG_OPEN
 
 from .. import api
 
@@ -2050,7 +2052,7 @@ class Kernel32(api.ApiHandler):
                 20:{"name":"PF_SECOND_LEVEL_ADDRESS_TRANSLATION","return":0},
                 21:{"name":"PF_VIRT_FIRMWARE_ENABLED","return":1},
                 22:{"name":"PF_RDWRFSGSBASE_AVAILABLE","return":1},
-                23:{"name":"PF_FASTFAIL_AVAILABLE","return":1},
+                23:{"name":"PF_FASTFAIL_AVAILABLE","return":0},
                 24:{"name":"PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE","return":0},
                 25:{"name":"PF_ARM_64BIT_LOADSTORE_ATOMIC","return":0},
                 26:{"name":"PF_ARM_EXTERNAL_CACHE_AVAILABLE","return":0},
@@ -2718,6 +2720,19 @@ class Kernel32(api.ApiHandler):
 
         return heap
 
+    @apihook('HeapValidate', argc=3)
+    def HeapValidate(self, emu, argv, ctx={}):
+        '''
+        BOOL HeapValidate(
+          HANDLE  hHeap,
+          DWORD   dwFlags,
+          LPCVOID lpMem
+        );
+        '''
+        hHeap, dwFlags, lpMem = argv
+        # Always return TRUE - in emulation we trust the heap is valid
+        return 1
+
     @apihook('GetCurrentThread', argc=0)
     def GetCurrentThread(self, emu, argv, ctx={}):
         '''
@@ -2854,6 +2869,18 @@ class Kernel32(api.ApiHandler):
             emu.set_last_error(windefs.ERROR_INVALID_PARAMETER)
 
         return rv
+
+    @apihook('FlsGetValue2', argc=1)
+    def FlsGetValue2(self, emu, argv, ctx={}):
+        '''
+        PVOID FlsGetValue2(
+          DWORD dwFlsIndex
+        );
+
+        Note: FlsGetValue2 is not a documented Windows API but may be called
+        by some shellcode. This is implemented as an alias to FlsGetValue.
+        '''
+        return self.FlsGetValue(emu, argv, ctx)
 
     @apihook('EncodePointer', argc=1)
     def EncodePointer(self, emu, argv, ctx={}):
@@ -5541,7 +5568,43 @@ class Kernel32(api.ApiHandler):
         );
         '''
         lpSystemInfo, = argv
-        return 0
+        ptr_size = emu.get_ptr_size()
+        si = self.k32types.SYSTEM_INFO(ptr_size)
+        
+        # Set processor architecture based on emulated architecture
+        if ptr_size == 4:
+            si.wProcessorArchitecture = k32types.PROCESSOR_ARCHITECTURE_INTEL
+        else:
+            si.wProcessorArchitecture = k32types.PROCESSOR_ARCHITECTURE_AMD64
+        
+        # Standard page size for Windows
+        si.dwPageSize = 0x1000
+        
+        # Typical address ranges
+        if ptr_size == 4:
+            si.lpMinimumApplicationAddress = 0x10000
+            si.lpMaximumApplicationAddress = 0x7FFEFFFF
+        else:
+            si.lpMinimumApplicationAddress = 0x10000
+            si.lpMaximumApplicationAddress = 0x7FFFFFFEFFFF
+        
+        # Processor mask (single processor)
+        si.dwActiveProcessorMask = 1
+        si.dwNumberOfProcessors = 1
+        
+        # Processor type
+        si.dwProcessorType = 586  # PROCESSOR_INTEL_PENTIUM
+        
+        # Allocation granularity (64KB is standard on Windows)
+        si.dwAllocationGranularity = 0x10000
+        
+        # Processor level and revision
+        si.wProcessorLevel = 6
+        si.wProcessorRevision = 0
+        
+        if lpSystemInfo:
+            self.mem_write(lpSystemInfo, si.get_bytes())
+        return
 
     @apihook('GetUserDefaultUILanguage', argc=0)
     def GetUserDefaultUILanguage(self, emu, argv, ctx={}):
@@ -6905,4 +6968,394 @@ class Kernel32(api.ApiHandler):
         '''
         return 1
 
+    @apihook('GetStartupInfo', argc=1)
+    def GetStartupInfo(self, emu, argv, ctx={}):
+        '''
+        void GetStartupInfoW(
+            [out] LPSTARTUPINFOW lpStartupInfo
+        );
+        '''
+        lpStartupInfo, = argv
 
+        si = self.k32types.STARTUPINFO(emu.get_ptr_size())
+
+        # Set structure size
+        si.cb = si.sizeof()
+        # Set default values (most are 0/NULL by default)
+        si.lpReserved = 0
+        si.lpDesktop = 0
+        si.lpTitle = 0
+        si.dwX = 0
+        si.dwY = 0
+        si.dwXSize = 0
+        si.dwYSize = 0
+        si.dwXCountChars = 0
+        si.dwYCountChars = 0
+        si.dwFillAttribute = 0
+        si.dwFlags = 0
+        si.wShowWindow = 1  # SW_SHOWNORMAL
+        si.cbReserved2 = 0
+        si.lpReserved2 = 0
+        si.hStdInput = 0
+        si.hStdOutput = 0
+        si.hStdError = 0
+
+        self.mem_write(lpStartupInfo, self.get_bytes(si))
+        return
+
+    @apihook('QueryFullProcessImageName', argc=4)
+    def QueryFullProcessImageName(self, emu, argv, ctx={}):
+        '''
+        BOOL QueryFullProcessImageNameA(
+            HANDLE hProcess,
+            DWORD  dwFlags,
+            LPSTR  lpExeName,
+            PDWORD lpdwSize
+        );
+        '''
+        hProcess, dwFlags, lpExeName, lpdwSize = argv
+
+        cw = self.get_char_width(ctx)
+
+        proc = self.get_object_from_handle(hProcess)
+        if proc is None:
+            # If handle is invalid, try current process
+            proc = emu.get_current_process()
+
+        if proc is None:
+            emu.set_last_error(windefs.ERROR_INVALID_HANDLE)
+            return 0
+
+        filename = proc.get_process_path()
+        if not filename:
+            filename = proc.path if hasattr(proc, 'path') else ''
+
+        if filename:
+            if cw == 2:
+                out = filename.encode('utf-16le') + b'\x00\x00'
+            else:
+                out = filename.encode('utf-8') + b'\x00'
+
+            # Read the size from lpdwSize
+            if lpdwSize:
+                max_size = int.from_bytes(self.mem_read(lpdwSize, 4), 'little')
+            else:
+                max_size = len(out)
+
+            str_len = len(filename)
+            if max_size < str_len + 1:
+                emu.set_last_error(windefs.ERROR_INSUFFICIENT_BUFFER)
+                return 0
+
+            self.mem_write(lpExeName, out)
+            # Write the actual length (excluding null terminator)
+            if lpdwSize:
+                self.mem_write(lpdwSize, str_len.to_bytes(4, 'little'))
+
+            return 1
+
+        emu.set_last_error(windefs.ERROR_FILE_NOT_FOUND)
+        return 0
+
+    @apihook('RtlCaptureContext', argc=1)
+    def RtlCaptureContext(self, emu, argv, ctx={}):
+        '''
+        void RtlCaptureContext(
+            PCONTEXT ContextRecord
+        );
+        '''
+        ContextRecord, = argv
+
+        ptr_size = emu.get_ptr_size()
+
+        if ptr_size == 8:
+            # 64-bit CONTEXT
+            context = windefs.CONTEXT64(ptr_size)
+            context.ContextFlags = 0x10001F  # CONTEXT_ALL
+            
+            # Capture general purpose registers
+            context.Rax = emu.reg_read(e_arch.AMD64_REG_RAX)
+            context.Rcx = emu.reg_read(e_arch.AMD64_REG_RCX)
+            context.Rdx = emu.reg_read(e_arch.AMD64_REG_RDX)
+            context.Rbx = emu.reg_read(e_arch.AMD64_REG_RBX)
+            context.Rsp = emu.reg_read(e_arch.AMD64_REG_RSP)
+            context.Rbp = emu.reg_read(e_arch.AMD64_REG_RBP)
+            context.Rsi = emu.reg_read(e_arch.AMD64_REG_RSI)
+            context.Rdi = emu.reg_read(e_arch.AMD64_REG_RDI)
+            context.R8 = emu.reg_read(e_arch.AMD64_REG_R8)
+            context.R9 = emu.reg_read(e_arch.AMD64_REG_R9)
+            context.R10 = emu.reg_read(e_arch.AMD64_REG_R10)
+            context.R11 = emu.reg_read(e_arch.AMD64_REG_R11)
+            context.R12 = emu.reg_read(e_arch.AMD64_REG_R12)
+            context.R13 = emu.reg_read(e_arch.AMD64_REG_R13)
+            context.R14 = emu.reg_read(e_arch.AMD64_REG_R14)
+            context.R15 = emu.reg_read(e_arch.AMD64_REG_R15)
+            context.Rip = emu.get_pc()
+            
+            # Capture segment registers
+            context.SegCs = emu.reg_read(e_arch.X86_REG_CS)
+            context.SegDs = emu.reg_read(e_arch.X86_REG_DS)
+            context.SegEs = emu.reg_read(e_arch.X86_REG_ES)
+            context.SegFs = emu.reg_read(e_arch.X86_REG_FS)
+            context.SegGs = emu.reg_read(e_arch.X86_REG_GS)
+            context.SegSs = emu.reg_read(e_arch.X86_REG_SS)
+            
+            # Capture flags
+            context.EFlags = emu.reg_read(e_arch.X86_REG_EFLAGS)
+        else:
+            # 32-bit CONTEXT
+            context = windefs.CONTEXT(ptr_size)
+            context.ContextFlags = 0x1003F  # CONTEXT_ALL
+            
+            # Capture general purpose registers
+            context.Eax = emu.reg_read(e_arch.X86_REG_EAX)
+            context.Ecx = emu.reg_read(e_arch.X86_REG_ECX)
+            context.Edx = emu.reg_read(e_arch.X86_REG_EDX)
+            context.Ebx = emu.reg_read(e_arch.X86_REG_EBX)
+            context.Esp = emu.reg_read(e_arch.X86_REG_ESP)
+            context.Ebp = emu.reg_read(e_arch.X86_REG_EBP)
+            context.Esi = emu.reg_read(e_arch.X86_REG_ESI)
+            context.Edi = emu.reg_read(e_arch.X86_REG_EDI)
+            context.Eip = emu.get_pc()
+            
+            # Capture segment registers
+            context.SegCs = emu.reg_read(e_arch.X86_REG_CS)
+            context.SegDs = emu.reg_read(e_arch.X86_REG_DS)
+            context.SegEs = emu.reg_read(e_arch.X86_REG_ES)
+            context.SegFs = emu.reg_read(e_arch.X86_REG_FS)
+            context.SegGs = emu.reg_read(e_arch.X86_REG_GS)
+            context.SegSs = emu.reg_read(e_arch.X86_REG_SS)
+            
+            # Capture flags
+            context.EFlags = emu.reg_read(e_arch.X86_REG_EFLAGS)
+
+        self.mem_write(ContextRecord, self.get_bytes(context))
+        return
+
+    @apihook('RtlLookupFunctionEntry', argc=3)
+    def RtlLookupFunctionEntry(self, emu, argv, ctx={}):
+        '''
+        PRUNTIME_FUNCTION RtlLookupFunctionEntry(
+            DWORD64               ControlPc,
+            PDWORD64              ImageBase,
+            PUNWIND_HISTORY_TABLE HistoryTable
+        );
+        '''
+        ControlPc, ImageBase, HistoryTable = argv
+
+        # Try to find the module containing this address
+        mod = emu.get_mod_from_addr(ControlPc)
+        
+        if mod and ImageBase:
+            # Write the image base to the output parameter
+            base = mod.get_base()
+            self.mem_write(ImageBase, base.to_bytes(8, 'little'))
+        
+        # Return NULL - we don't have actual unwind info in the emulator
+        # This is safe because callers typically check for NULL return
+        return 0
+
+    @apihook('InterlockedPopEntrySList', argc=1)
+    def InterlockedPopEntrySList(self, emu, argv, ctx={}):
+        '''
+        PSLIST_ENTRY InterlockedPopEntrySList(
+            PSLIST_HEADER ListHead
+        );
+        '''
+        ListHead, = argv
+        
+        # Return NULL to indicate the list is empty
+        # This is a safe default for emulation
+        return 0
+
+    @apihook('InterlockedPushEntrySList', argc=2)
+    def InterlockedPushEntrySList(self, emu, argv, ctx={}):
+        '''
+        PSLIST_ENTRY InterlockedPushEntrySList(
+            PSLIST_HEADER ListHead,
+            PSLIST_ENTRY  ListEntry
+        );
+        '''
+        ListHead, ListEntry = argv
+        
+        # Return NULL to indicate this was the first entry
+        return 0
+
+    @apihook('InitializeSListHead', argc=1)
+    def InitializeSListHead(self, emu, argv, ctx={}):
+        '''
+        void InitializeSListHead(
+            PSLIST_HEADER ListHead
+        );
+        '''
+        ListHead, = argv
+        
+        # Zero out the SLIST_HEADER structure (16 bytes on x64, 8 bytes on x86)
+        ptr_size = emu.get_ptr_size()
+        if ptr_size == 8:
+            self.mem_write(ListHead, b'\x00' * 16)
+        else:
+            self.mem_write(ListHead, b'\x00' * 8)
+        
+        return
+
+    @apihook('FlushInstructionCache', argc=3)
+    def FlushInstructionCache(self, emu, argv, ctx={}):
+        '''
+        BOOL FlushInstructionCache(
+            HANDLE  hProcess,
+            LPCVOID lpBaseAddress,
+            SIZE_T  dwSize
+        );
+        '''
+        hProcess, lpBaseAddress, dwSize = argv
+        
+        # In the emulator, we don't have a real instruction cache to flush
+        # Just return success
+        return 1
+
+    @apihook('SetConsoleCtrlHandler', argc=2)
+    def SetConsoleCtrlHandler(self, emu, argv, ctx={}):
+        '''
+        BOOL WINAPI SetConsoleCtrlHandler(
+            PHANDLER_ROUTINE HandlerRoutine,
+            BOOL             Add
+        );
+        '''
+        HandlerRoutine, Add = argv
+        
+        # Just return success - we don't actually handle console control signals
+        return 1
+
+    @apihook('SetFileApisToOEM', argc=0)
+    def SetFileApisToOEM(self, emu, argv, ctx={}):
+        '''
+        void SetFileApisToOEM();
+        '''
+        # This function sets the file I/O functions to use OEM character set
+        # No return value
+        return
+
+    @apihook('SetFileApisToANSI', argc=0)
+    def SetFileApisToANSI(self, emu, argv, ctx={}):
+        '''
+        void SetFileApisToANSI();
+        '''
+        # This function sets the file I/O functions to use ANSI character set
+        # No return value
+        return
+
+    @apihook('RegOpenKeyExW', argc=5)
+    def RegOpenKeyExW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegOpenKeyExW(
+          HKEY    hKey,
+          LPCWSTR lpSubKey,
+          DWORD   ulOptions,
+          REGSAM  samDesired,
+          PHKEY   phkResult
+        );
+        '''
+        hKey, lpSubKey, ulOptions, samDesired, phkResult = argv
+        rv = windefs.ERROR_SUCCESS
+        hnd = 0
+
+        hkey_name = regdefs.get_hkey_type(hKey)
+        if hkey_name:
+            argv[0] = hkey_name
+            if not hnd and not lpSubKey:
+                hnd = hKey
+
+        cw = 2  # Wide string
+        if lpSubKey:
+            lpSubKey = self.read_mem_string(lpSubKey, cw)
+            argv[1] = lpSubKey
+
+            if hkey_name and lpSubKey:
+                if not lpSubKey.startswith('\\'):
+                    lpSubKey = '\\' + lpSubKey
+                lpSubKey = hkey_name + lpSubKey
+
+            hnd = self.reg_open_key(lpSubKey, create=False)
+            if not hnd:
+                rv = windefs.ERROR_PATH_NOT_FOUND
+
+            self.log_registry_access(lpSubKey, REG_OPEN, handle=hnd)
+
+        if phkResult and hnd:
+            self.mem_write(phkResult, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+        return rv
+
+    @apihook('SetFileAttributesW', argc=2)
+    def SetFileAttributesW(self, emu, argv, ctx={}):
+        '''
+        BOOL SetFileAttributesW(
+          LPCWSTR lpFileName,
+          DWORD   dwFileAttributes
+        );
+        '''
+        lpFileName, dwFileAttributes = argv
+
+        cw = 2
+        if lpFileName:
+            fn = self.read_mem_string(lpFileName, cw)
+            argv[0] = fn
+
+        # Return TRUE for success
+        return 1
+
+    @apihook('SetFileAttributesA', argc=2)
+    def SetFileAttributesA(self, emu, argv, ctx={}):
+        '''
+        BOOL SetFileAttributesA(
+          LPCSTR lpFileName,
+          DWORD  dwFileAttributes
+        );
+        '''
+        lpFileName, dwFileAttributes = argv
+
+        cw = 1
+        if lpFileName:
+            fn = self.read_mem_string(lpFileName, cw)
+            argv[0] = fn
+
+        return 1
+
+    @apihook('SetConsoleOutputCP', argc=1)
+    def SetConsoleOutputCP(self, emu, argv, ctx={}):
+        '''
+        BOOL SetConsoleOutputCP(
+          UINT wCodePageID
+        );
+        '''
+        wCodePageID = argv[0]
+        # Return TRUE for success
+        return 1
+
+    @apihook('SetConsoleCP', argc=1)
+    def SetConsoleCP(self, emu, argv, ctx={}):
+        '''
+        BOOL SetConsoleCP(
+          UINT wCodePageID
+        );
+        '''
+        wCodePageID = argv[0]
+        # Return TRUE for success
+        return 1
+
+    @apihook('GetConsoleOutputCP', argc=0)
+    def GetConsoleOutputCP(self, emu, argv, ctx={}):
+        '''
+        UINT GetConsoleOutputCP();
+        '''
+        # Return UTF-8 code page
+        return 65001
+
+    @apihook('GetConsoleCP', argc=0)
+    def GetConsoleCP(self, emu, argv, ctx={}):
+        '''
+        UINT GetConsoleCP();
+        '''
+        # Return UTF-8 code page
+        return 65001

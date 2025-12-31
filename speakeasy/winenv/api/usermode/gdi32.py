@@ -267,3 +267,95 @@ class GDI32(api.ApiHandler):
         );
         """
         return 0
+
+    @apihook('CreateSolidBrush', argc=1)
+    def CreateSolidBrush(self, emu, argv, ctx={}):
+        """
+        HBRUSH CreateSolidBrush(
+          COLORREF color
+        );
+        """
+        color, = argv
+        # Return a handle to the brush
+        return self.get_handle()
+
+    @apihook('CreatePen', argc=3)
+    def CreatePen(self, emu, argv, ctx={}):
+        """
+        HPEN CreatePen(
+          int      iStyle,
+          int      cWidth,
+          COLORREF color
+        );
+        """
+        iStyle, cWidth, color = argv
+        # Return a handle to the pen
+        return self.get_handle()
+
+    @apihook('GetTextCharsetInfo', argc=3)
+    def GetTextCharsetInfo(self, emu, argv, ctx={}):
+        """
+        int GetTextCharsetInfo(
+          HDC             hdc,
+          LPFONTSIGNATURE lpSig,
+          DWORD           dwFlags
+        );
+        """
+        hdc, lpSig, dwFlags = argv
+        # Return ANSI_CHARSET (0) as default charset
+        # Could also return DEFAULT_CHARSET (1) on failure
+        return 0  # ANSI_CHARSET
+
+    @apihook('CreateFontIndirectW', argc=1)
+    def CreateFontIndirectW(self, emu, argv, ctx={}):
+        """
+        HFONT CreateFontIndirectW(
+          const LOGFONTW *lplf
+        );
+        """
+        lplf, = argv
+        # Return a handle to the font
+        return self.get_handle()
+
+    @apihook('CreateFontIndirectA', argc=1)
+    def CreateFontIndirectA(self, emu, argv, ctx={}):
+        """
+        HFONT CreateFontIndirectA(
+          const LOGFONTA *lplf
+        );
+        """
+        lplf, = argv
+        # Return a handle to the font
+        return self.get_handle()
+
+    @apihook('GetTextMetricsW', argc=2)
+    def GetTextMetricsW(self, emu, argv, ctx={}):
+        """
+        BOOL GetTextMetricsW(
+          HDC          hdc,
+          LPTEXTMETRICW lptm
+        );
+        """
+        hdc, lptm = argv
+        # Fill TEXTMETRICW structure with default values
+        # The structure is 60 bytes (on 32-bit) / 60 bytes (on 64-bit)
+        if lptm:
+            # Just zero out the structure - basic stub implementation
+            self.mem_write(lptm, b'\x00' * 60)
+            # Set tmHeight to a reasonable value (16 pixels)
+            self.mem_write(lptm, (16).to_bytes(4, 'little'))
+        return 1  # TRUE for success
+
+    @apihook('GetTextMetricsA', argc=2)
+    def GetTextMetricsA(self, emu, argv, ctx={}):
+        """
+        BOOL GetTextMetricsA(
+          HDC          hdc,
+          LPTEXTMETRICA lptm
+        );
+        """
+        hdc, lptm = argv
+        if lptm:
+            self.mem_write(lptm, b'\x00' * 60)
+            self.mem_write(lptm, (16).to_bytes(4, 'little'))
+        return 1  # TRUE for success

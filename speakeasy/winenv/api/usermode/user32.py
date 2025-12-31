@@ -143,6 +143,18 @@ class User32(api.ApiHandler):
 
         return rv
 
+    @apihook('GetWindowDC', argc=1)
+    def GetWindowDC(self, emu, argv, ctx={}):
+        '''
+        HDC GetWindowDC(
+          HWND hWnd
+        );
+        '''
+        hWnd, = argv
+        # Returns a DC for the entire window including title bar, menus, scroll bars
+        rv = self.sessman.get_device_context()
+        return rv
+
     @apihook('RegisterClassEx', argc=1)
     def RegisterClassEx(self, emu, argv, ctx={}):
         '''
@@ -1773,6 +1785,56 @@ class User32(api.ApiHandler):
         """
         return 0
 
+    @apihook('OpenClipboard', argc=1)
+    def OpenClipboard(self, emu, argv, ctx={}):
+        """
+        BOOL OpenClipboard(
+          HWND hWndNewOwner
+        );
+        """
+        hWndNewOwner, = argv
+        # Return TRUE to indicate the clipboard was opened successfully
+        return 1
+
+    @apihook('CloseClipboard', argc=0)
+    def CloseClipboard(self, emu, argv, ctx={}):
+        """
+        BOOL CloseClipboard();
+        """
+        # Return TRUE to indicate the clipboard was closed successfully
+        return 1
+
+    @apihook('EmptyClipboard', argc=0)
+    def EmptyClipboard(self, emu, argv, ctx={}):
+        """
+        BOOL EmptyClipboard();
+        """
+        # Return TRUE to indicate the clipboard was emptied successfully
+        return 1
+
+    @apihook('SetClipboardData', argc=2)
+    def SetClipboardData(self, emu, argv, ctx={}):
+        """
+        HANDLE SetClipboardData(
+          UINT   uFormat,
+          HANDLE hMem
+        );
+        """
+        uFormat, hMem = argv
+        # Return the handle to indicate success
+        return hMem if hMem else self.get_handle()
+
+    @apihook('GetClipboardData', argc=1)
+    def GetClipboardData(self, emu, argv, ctx={}):
+        """
+        HANDLE GetClipboardData(
+          UINT uFormat
+        );
+        """
+        uFormat, = argv
+        # Return NULL to indicate no data available
+        return 0
+
     @apihook('IsWindow', argc=1)
     def IsWindow(self, emu, argv, ctx={}):
         """
@@ -2133,3 +2195,159 @@ class User32(api.ApiHandler):
         # >>> ctypes.windll.user32.GetDoubleClickTime()
         # 500
         return 500
+
+    @apihook('SystemParametersInfo', argc=4)
+    def SystemParametersInfo(self, emu, argv, ctx={}):
+        '''
+        BOOL SystemParametersInfoA(
+            UINT  uiAction,
+            UINT  uiParam,
+            PVOID pvParam,
+            UINT  fWinIni
+        );
+        '''
+        uiAction, uiParam, pvParam, fWinIni = argv
+        
+        # Just return success for most queries
+        # In a full implementation, we would handle specific uiAction values
+        return 1
+
+    @apihook('CreateDialogParam', argc=5)
+    def CreateDialogParam(self, emu, argv, ctx={}):
+        '''
+        HWND CreateDialogParamA(
+            HINSTANCE hInstance,
+            LPCSTR    lpTemplateName,
+            HWND      hWndParent,
+            DLGPROC   lpDialogFunc,
+            LPARAM    dwInitParam
+        );
+        '''
+        hInstance, lpTemplateName, hWndParent, lpDialogFunc, dwInitParam = argv
+        
+        cw = self.get_char_width(ctx)
+        # Check if lpTemplateName is a resource ID (MAKEINTRESOURCE)
+        # If high-order word is 0, it's a resource ID, not a pointer
+        if lpTemplateName and lpTemplateName > 0xFFFF:
+            tname = self.read_mem_string(lpTemplateName, cw)
+            argv[1] = tname
+        else:
+            argv[1] = 'RESOURCE_ID_%d' % lpTemplateName
+        
+        return self.get_handle()
+
+    @apihook('CreateDialogParamW', argc=5)
+    def CreateDialogParamW(self, emu, argv, ctx={}):
+        '''
+        HWND CreateDialogParamW(
+            HINSTANCE hInstance,
+            LPCWSTR   lpTemplateName,
+            HWND      hWndParent,
+            DLGPROC   lpDialogFunc,
+            LPARAM    dwInitParam
+        );
+        '''
+        hInstance, lpTemplateName, hWndParent, lpDialogFunc, dwInitParam = argv
+        
+        cw = 2
+        # Check if lpTemplateName is a resource ID (MAKEINTRESOURCE)
+        # If high-order word is 0, it's a resource ID, not a pointer
+        if lpTemplateName and lpTemplateName > 0xFFFF:
+            tname = self.read_mem_string(lpTemplateName, cw)
+            argv[1] = tname
+        else:
+            argv[1] = 'RESOURCE_ID_%d' % lpTemplateName
+        
+        return self.get_handle()
+
+    @apihook('SetRectEmpty', argc=1)
+    def SetRectEmpty(self, emu, argv, ctx={}):
+        """
+        BOOL SetRectEmpty(
+          LPRECT lprc
+        );
+        """
+        lprc, = argv
+        if lprc:
+            # Set all members of RECT to 0 (left, top, right, bottom)
+            # RECT is 16 bytes (4 LONG values)
+            self.mem_write(lprc, b'\x00' * 16)
+        return 1  # TRUE for success
+
+    @apihook('EnumDisplayMonitors', argc=4)
+    def EnumDisplayMonitors(self, emu, argv, ctx={}):
+        """
+        BOOL EnumDisplayMonitors(
+          HDC             hdc,
+          LPCRECT         lprcClip,
+          MONITORENUMPROC lpfnEnum,
+          LPARAM          dwData
+        );
+        """
+        hdc, lprcClip, lpfnEnum, dwData = argv
+        # For a single-monitor emulated environment, we just return TRUE
+        # without calling the callback, or we could call it once for the primary monitor
+        # For simplicity, just return TRUE indicating success
+        return 1  # TRUE
+
+    @apihook('PostThreadMessageA', argc=4)
+    def PostThreadMessageA(self, emu, argv, ctx={}):
+        """
+        BOOL PostThreadMessageA(
+          DWORD  idThread,
+          UINT   Msg,
+          WPARAM wParam,
+          LPARAM lParam
+        );
+        """
+        idThread, Msg, wParam, lParam = argv
+        # Return TRUE to indicate the message was posted successfully
+        return 1
+
+    @apihook('PostThreadMessageW', argc=4)
+    def PostThreadMessageW(self, emu, argv, ctx={}):
+        """
+        BOOL PostThreadMessageW(
+          DWORD  idThread,
+          UINT   Msg,
+          WPARAM wParam,
+          LPARAM lParam
+        );
+        """
+        idThread, Msg, wParam, lParam = argv
+        return 1
+
+    @apihook('PostMessageA', argc=4)
+    def PostMessageA(self, emu, argv, ctx={}):
+        """
+        BOOL PostMessageA(
+          HWND   hWnd,
+          UINT   Msg,
+          WPARAM wParam,
+          LPARAM lParam
+        );
+        """
+        hWnd, Msg, wParam, lParam = argv
+        return 1
+
+    @apihook('PostMessageW', argc=4)
+    def PostMessageW(self, emu, argv, ctx={}):
+        """
+        BOOL PostMessageW(
+          HWND   hWnd,
+          UINT   Msg,
+          WPARAM wParam,
+          LPARAM lParam
+        );
+        """
+        hWnd, Msg, wParam, lParam = argv
+        return 1
+
+    @apihook('GetInputState', argc=0)
+    def GetInputState(self, emu, argv, ctx={}):
+        """
+        BOOL GetInputState();
+        """
+        # Returns FALSE - no mouse/keyboard input pending in emulation
+        return 0
+

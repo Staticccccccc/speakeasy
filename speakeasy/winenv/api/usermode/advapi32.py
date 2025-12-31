@@ -2238,3 +2238,213 @@ class AdvApi32(api.ApiHandler):
         svcname = self.read_mem_string(lpServiceName, cw)
         argv[1] = svcname
         return self.get_handle()
+
+    @apihook('InitializeSecurityDescriptor', argc=2)
+    def InitializeSecurityDescriptor(self, emu, argv, ctx={}):
+        '''
+        BOOL InitializeSecurityDescriptor(
+          PSECURITY_DESCRIPTOR pSecurityDescriptor,
+          DWORD                dwRevision
+        );
+        '''
+        pSecurityDescriptor, dwRevision = argv
+        # Initialize the security descriptor structure
+        # SECURITY_DESCRIPTOR_REVISION = 1
+        if pSecurityDescriptor:
+            # Write a minimal security descriptor (20 bytes for x86)
+            # Just zero it out for now
+            self.mem_write(pSecurityDescriptor, b'\x00' * 20)
+        return 1  # TRUE for success
+
+    @apihook('SetSecurityDescriptorDacl', argc=4)
+    def SetSecurityDescriptorDacl(self, emu, argv, ctx={}):
+        '''
+        BOOL SetSecurityDescriptorDacl(
+          PSECURITY_DESCRIPTOR pSecurityDescriptor,
+          BOOL                 bDaclPresent,
+          PACL                 pDacl,
+          BOOL                 bDaclDefaulted
+        );
+        '''
+        pSecurityDescriptor, bDaclPresent, pDacl, bDaclDefaulted = argv
+        return 1  # TRUE for success
+
+    @apihook('SetSecurityDescriptorSacl', argc=4)
+    def SetSecurityDescriptorSacl(self, emu, argv, ctx={}):
+        '''
+        BOOL SetSecurityDescriptorSacl(
+          PSECURITY_DESCRIPTOR pSecurityDescriptor,
+          BOOL                 bSaclPresent,
+          PACL                 pSacl,
+          BOOL                 bSaclDefaulted
+        );
+        '''
+        pSecurityDescriptor, bSaclPresent, pSacl, bSaclDefaulted = argv
+        return 1  # TRUE for success
+
+    @apihook('RegCreateKeyExA', argc=9)
+    def RegCreateKeyExA(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegCreateKeyExA(
+          HKEY                        hKey,
+          LPCSTR                      lpSubKey,
+          DWORD                       Reserved,
+          LPSTR                       lpClass,
+          DWORD                       dwOptions,
+          REGSAM                      samDesired,
+          LPSECURITY_ATTRIBUTES       lpSecurityAttributes,
+          PHKEY                       phkResult,
+          LPDWORD                     lpdwDisposition
+        );
+        '''
+        hkey, lpSubKey, reserved, lpClass, dwOptions, samDesired, \
+            lpSecurityAttributes, phkResult, lpdwDisposition = argv
+        rv = windefs.ERROR_SUCCESS
+
+        hkey_name = regdefs.get_hkey_type(hkey)
+        if hkey_name:
+            argv[0] = hkey_name
+        else:
+            key_obj = emu.regman.get_key_from_handle(hkey)
+            if key_obj:
+                hkey_name = key_obj.path
+            else:
+                return windefs.ERROR_INVALID_HANDLE
+
+        cw = 1  # ANSI
+        if lpSubKey:
+            lpSubKey = self.read_mem_string(lpSubKey, cw)
+            argv[1] = lpSubKey
+
+            if hkey_name and lpSubKey:
+                if not lpSubKey.startswith('\\'):
+                    lpSubKey = '\\' + lpSubKey
+                full_path = hkey_name + lpSubKey
+
+            hnd = self.reg_open_key(full_path, create=True)
+            if not hnd:
+                rv = windefs.ERROR_ACCESS_DENIED
+                hnd = 0
+
+            if phkResult and hnd:
+                self.mem_write(phkResult, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+            # Write disposition (REG_CREATED_NEW_KEY = 1, REG_OPENED_EXISTING_KEY = 2)
+            if lpdwDisposition:
+                self.mem_write(lpdwDisposition, (1).to_bytes(4, 'little'))
+
+            self.log_registry_access(full_path, REG_CREATE)
+
+        return rv
+
+    @apihook('RegCreateKeyExW', argc=9)
+    def RegCreateKeyExW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegCreateKeyExW(
+          HKEY                        hKey,
+          LPCWSTR                     lpSubKey,
+          DWORD                       Reserved,
+          LPWSTR                      lpClass,
+          DWORD                       dwOptions,
+          REGSAM                      samDesired,
+          LPSECURITY_ATTRIBUTES       lpSecurityAttributes,
+          PHKEY                       phkResult,
+          LPDWORD                     lpdwDisposition
+        );
+        '''
+        hkey, lpSubKey, reserved, lpClass, dwOptions, samDesired, \
+            lpSecurityAttributes, phkResult, lpdwDisposition = argv
+        rv = windefs.ERROR_SUCCESS
+
+        hkey_name = regdefs.get_hkey_type(hkey)
+        if hkey_name:
+            argv[0] = hkey_name
+        else:
+            key_obj = emu.regman.get_key_from_handle(hkey)
+            if key_obj:
+                hkey_name = key_obj.path
+            else:
+                return windefs.ERROR_INVALID_HANDLE
+
+        cw = 2  # Unicode
+        if lpSubKey:
+            lpSubKey = self.read_mem_string(lpSubKey, cw)
+            argv[1] = lpSubKey
+
+            if hkey_name and lpSubKey:
+                if not lpSubKey.startswith('\\'):
+                    lpSubKey = '\\' + lpSubKey
+                full_path = hkey_name + lpSubKey
+
+            hnd = self.reg_open_key(full_path, create=True)
+            if not hnd:
+                rv = windefs.ERROR_ACCESS_DENIED
+                hnd = 0
+
+            if phkResult and hnd:
+                self.mem_write(phkResult, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+            if lpdwDisposition:
+                self.mem_write(lpdwDisposition, (1).to_bytes(4, 'little'))
+
+            self.log_registry_access(full_path, REG_CREATE)
+
+        return rv
+
+    @apihook('RegSetValueExA', argc=6)
+    def RegSetValueExA(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegSetValueExA(
+          HKEY       hKey,
+          LPCSTR     lpValueName,
+          DWORD      Reserved,
+          DWORD      dwType,
+          CONST BYTE *lpData,
+          DWORD      cbData
+        );
+        '''
+        hKey, lpValueName, Reserved, dwType, lpData, cbData = argv
+        rv = windefs.ERROR_SUCCESS
+
+        cw = 1  # ANSI
+        value_name = ''
+        if lpValueName:
+            value_name = self.read_mem_string(lpValueName, cw)
+            argv[1] = value_name
+
+        # Read the data if provided
+        data = b''
+        if lpData and cbData:
+            data = self.mem_read(lpData, cbData)
+
+        # For now, just return success - actual value setting would require
+        # extending the registry manager
+        return rv
+
+    @apihook('RegSetValueExW', argc=6)
+    def RegSetValueExW(self, emu, argv, ctx={}):
+        '''
+        LSTATUS RegSetValueExW(
+          HKEY        hKey,
+          LPCWSTR     lpValueName,
+          DWORD       Reserved,
+          DWORD       dwType,
+          CONST BYTE  *lpData,
+          DWORD       cbData
+        );
+        '''
+        hKey, lpValueName, Reserved, dwType, lpData, cbData = argv
+        rv = windefs.ERROR_SUCCESS
+
+        cw = 2  # Unicode
+        value_name = ''
+        if lpValueName:
+            value_name = self.read_mem_string(lpValueName, cw)
+            argv[1] = value_name
+
+        data = b''
+        if lpData and cbData:
+            data = self.mem_read(lpData, cbData)
+
+        return rv
+

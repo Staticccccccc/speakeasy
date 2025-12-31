@@ -1409,6 +1409,48 @@ class Msvcrt(api.ApiHandler):
 
         return rv
 
+    @apihook('__stdio_common_vswprintf', argc=e_arch.VAR_ARGS, conv=e_arch.CALL_CONV_CDECL)
+    def __stdio_common_vswprintf(self, emu, argv, ctx={}):
+        """
+        int __stdio_common_vswprintf(
+            unsigned int64 Options,
+            wchar_t *Buffer,
+            unsigned int BufferCount,
+            const wchar_t *format,
+            locale_t Locale,
+            va_list argptr
+        );
+        """
+        ptr_size = emu.get_ptr_size()
+        
+        # Handle argument parsing based on architecture
+        if ptr_size == 8:
+            # 64-bit: Options is a single 64-bit value
+            argv = emu.get_func_argv(e_arch.CALL_CONV_CDECL, 6)
+            options, buffer, count, _format, locale, argptr = argv
+        else:
+            # 32-bit: Options is passed as two 32-bit values (lo, hi)
+            argv = emu.get_func_argv(e_arch.CALL_CONV_CDECL, 7)
+            options_lo, options_hi, buffer, count, _format, locale, argptr = argv
+        
+        rv = 0
+        
+        if _format:
+            fmt_str = self.read_wide_string(_format)
+            fmt_cnt = self.get_va_arg_count(fmt_str)
+
+            vargs = self.va_args(argptr, fmt_cnt)
+
+            fin = self.do_str_format(fmt_str, vargs)
+            if count > 0:
+                fin = fin[:count]
+
+            rv = len(fin)
+            if buffer:
+                self.mem_write(buffer, fin.encode('utf-16le') + b'\x00\x00')
+
+        return rv
+
     @apihook('_strcmpi', argc=2, conv=e_arch.CALL_CONV_CDECL)
     def _strcmpi(self, emu, argv, ctx={}):
         """
@@ -1723,3 +1765,104 @@ class Msvcrt(api.ApiHandler):
             return SIG_IGN
         else:
             return SIG_ERR
+
+    @apihook('isspace', argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def isspace(self, emu, argv, ctx={}):
+        '''
+        int isspace(
+            int c
+        );
+        '''
+        c, = argv
+        
+        # Space characters: space, tab, newline, vertical tab, form feed, carriage return
+        if c in (0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D):
+            return 1
+        return 0
+
+    @apihook('iswspace', argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def iswspace(self, emu, argv, ctx={}):
+        '''
+        int iswspace(
+            wint_t c
+        );
+        '''
+        c, = argv
+        
+        # Space characters: space, tab, newline, vertical tab, form feed, carriage return
+        if c in (0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D):
+            return 1
+        return 0
+
+    @apihook('_isatty', argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def _isatty(self, emu, argv, ctx={}):
+        '''
+        int _isatty(
+            int fd
+        );
+        '''
+        fd, = argv
+        
+        # Return 1 for stdin, stdout, stderr (file descriptors 0, 1, 2)
+        # These are typically connected to a console/terminal
+        if fd in (0, 1, 2):
+            return 1
+        return 0
+
+    @apihook('_fileno', argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def _fileno(self, emu, argv, ctx={}):
+        '''
+        int _fileno(
+            FILE *stream
+        );
+        '''
+        stream, = argv
+        
+        # Return a dummy file descriptor
+        return 1
+
+    @apihook('fputs', argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def fputs(self, emu, argv, ctx={}):
+        '''
+        int fputs(
+            const char *str,
+            FILE *stream
+        );
+        '''
+        _str, stream = argv
+        
+        string = self.read_mem_string(_str, 1)
+        argv[0] = string
+        
+        # Return a non-negative value on success
+        return len(string)
+
+    @apihook('fwrite', argc=4, conv=e_arch.CALL_CONV_CDECL)
+    def fwrite(self, emu, argv, ctx={}):
+        '''
+        size_t fwrite(
+            const void *buffer,
+            size_t size,
+            size_t count,
+            FILE *stream
+        );
+        '''
+        buffer, size, count, stream = argv
+        
+        # Return the number of full items written
+        return count
+
+    @apihook('_CxxThrowException', argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def _CxxThrowException(self, emu, argv, ctx={}):
+        '''
+        void _CxxThrowException(
+            void* pExceptionObject,
+            _ThrowInfo* pThrowInfo
+        );
+        '''
+        pExceptionObject, pThrowInfo = argv
+        
+        # In the emulator, we just log this and continue
+        # Real behavior would unwind the stack and find exception handlers
+        return
+

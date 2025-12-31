@@ -1098,9 +1098,18 @@ class WindowsEmulator(BinaryEmulator):
                                                                    alt_imp_api)
             return mod, func_attrs
 
+
         if alt_imp_api:
             mod, func_attrs = self.api.get_export_func_handler(dll,
                                                                alt_imp_api)
+            # If not found and we have an alternate dll, try with that too
+            if not func_attrs and alt_imp_dll:
+                mod, func_attrs = self.api.get_export_func_handler(alt_imp_dll,
+                                                                   alt_imp_api)
+                # Also try with original name on alternate dll
+                if not func_attrs:
+                    mod, func_attrs = self.api.get_export_func_handler(alt_imp_dll,
+                                                                       name)
         elif alt_imp_dll:
             mod, func_attrs = self.api.get_export_func_handler(alt_imp_dll,
                                                                name)
@@ -2166,8 +2175,11 @@ class WindowsEmulator(BinaryEmulator):
         # Handle __fastfail interrupt introduced in Windows 8
         if intnum == 0x29:
             ecx = self.reg_read(_arch.X86_REG_ECX)
-            # Cookie security init failed, just return since we are in __security_init_cookie
-            if ecx == 6:
+            # Handle various security check failures by just returning
+            # 6 = FAST_FAIL_LEGACY_GS_VIOLATION
+            # 7 = FAST_FAIL_GS_COOKIE_INIT  
+            # These occur in __security_init_cookie and similar, just continue
+            if ecx in (6, 7, 2, 10):
                 ctx.append(self.add_code_hook(cb=_tmp_hook, ctx=ctx))
                 return True
 

@@ -2557,6 +2557,21 @@ class Ntoskrnl(api.ApiHandler):
 
         return rv
 
+    @apihook('PsSetCreateProcessNotifyRoutine', argc=2)
+    def PsSetCreateProcessNotifyRoutine(self, emu, argv, ctx={}):
+        """
+        NTKERNELAPI
+        NTSTATUS
+        PsSetCreateProcessNotifyRoutine (
+            _In_ PCREATE_PROCESS_NOTIFY_ROUTINE NotifyRoutine,
+            _In_ BOOLEAN Remove
+            );
+        """
+        NotifyRoutine, Remove = argv
+        rv = ddk.STATUS_SUCCESS
+
+        return rv
+
     @apihook('PsSetLoadImageNotifyRoutine', argc=1)
     def PsSetLoadImageNotifyRoutine(self, emu, argv, ctx={}):
         """
@@ -2657,10 +2672,85 @@ class Ntoskrnl(api.ApiHandler):
 
         hnd = self.reg_open_key(name, create=False)
         if not hnd:
-            rv = ddk.STATUS_INVALID_HANDLE
+            rv = ddk.STATUS_OBJECT_NAME_NOT_FOUND
+            hnd = 0  # Set to 0 instead of None
 
-        if phnd:
+        if phnd and hnd is not None:
             self.mem_write(phnd, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+        return rv
+
+    @apihook('ZwCreateKey', argc=7)
+    def ZwCreateKey(self, emu, argv, ctx={}):
+        """
+        NTSYSAPI NTSTATUS ZwCreateKey(
+          PHANDLE            KeyHandle,
+          ACCESS_MASK        DesiredAccess,
+          POBJECT_ATTRIBUTES ObjectAttributes,
+          ULONG              TitleIndex,
+          PUNICODE_STRING    Class,
+          ULONG              CreateOptions,
+          PULONG             Disposition
+        );
+        """
+        phnd, access, objattr, title_idx, cls, create_opts, disposition = argv
+        rv = ddk.STATUS_SUCCESS
+
+        oa = self.win.OBJECT_ATTRIBUTES(emu.get_ptr_size())
+        oa = self.mem_cast(oa, objattr)
+        name = self.read_unicode_string(oa.ObjectName)
+
+        argv[2] = name
+
+        # Try to open existing key first, if not found, create it
+        hnd = self.reg_open_key(name, create=True)
+        if not hnd:
+            rv = ddk.STATUS_UNSUCCESSFUL
+
+        if phnd and hnd:
+            self.mem_write(phnd, hnd.to_bytes(self.get_ptr_size(), 'little'))
+
+        # Write disposition (REG_CREATED_NEW_KEY = 1, REG_OPENED_EXISTING_KEY = 2)
+        if disposition:
+            # For simplicity, assume we always create a new key
+            self.mem_write(disposition, (1).to_bytes(4, 'little'))
+
+        return rv
+
+    @apihook('ZwSetValueKey', argc=6)
+    def ZwSetValueKey(self, emu, argv, ctx={}):
+        """
+        NTSYSAPI NTSTATUS ZwSetValueKey(
+          HANDLE          KeyHandle,
+          PUNICODE_STRING ValueName,
+          ULONG           TitleIndex,
+          ULONG           Type,
+          PVOID           Data,
+          ULONG           DataSize
+        );
+        """
+        key_handle, value_name_ptr, title_idx, reg_type, data_ptr, data_size = argv
+        rv = ddk.STATUS_SUCCESS
+
+        # Read the value name
+        value_name = ''
+        if value_name_ptr:
+            value_name = self.read_unicode_string(value_name_ptr)
+            argv[1] = value_name
+
+        # Read the data
+        data = b''
+        if data_ptr and data_size:
+            data = self.mem_read(data_ptr, data_size)
+
+        # Get the key and set the value
+        key = self.reg_get_key(key_handle)
+        if key:
+            # For now, just log the operation - actual value setting would require
+            # extending the registry manager
+            pass
+        else:
+            rv = ddk.STATUS_INVALID_HANDLE
 
         return rv
 
@@ -3231,3 +3321,33 @@ class Ntoskrnl(api.ApiHandler):
 
         self.mem_free(lpMem)
         return rv
+
+    @apihook('PsGetCurrentProcessId', argc=0)
+    def PsGetCurrentProcessId(self, emu, argv, ctx={}):
+        """
+        HANDLE PsGetCurrentProcessId();
+        """
+        proc = emu.get_current_process()
+        if proc:
+            return proc.get_pid()
+        return 0
+
+    @apihook('PsGetCurrentProcess', argc=0)
+    def PsGetCurrentProcess(self, emu, argv, ctx={}):
+        """
+        PEPROCESS PsGetCurrentProcess();
+        """
+        proc = emu.get_current_process()
+        if proc:
+            return proc.get_base()
+        return 0
+
+    @apihook('PsGetCurrentThreadId', argc=0)
+    def PsGetCurrentThreadId(self, emu, argv, ctx={}):
+        """
+        HANDLE PsGetCurrentThreadId();
+        """
+        thread = emu.get_current_thread()
+        if thread:
+            return thread.get_tid()
+        return 0
