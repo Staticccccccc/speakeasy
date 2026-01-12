@@ -4129,11 +4129,23 @@ class Kernel32(api.ApiHandler):
 
         if ptr_size == 4:
             si.wProcessorArchitecture = k32types.PROCESSOR_ARCHITECTURE_INTEL
+            si.lpMinimumApplicationAddress = 0x10000
+            si.lpMaximumApplicationAddress = 0x7FFEFFFF
         else:
             si.wProcessorArchitecture = k32types.PROCESSOR_ARCHITECTURE_AMD64
+            si.lpMinimumApplicationAddress = 0x10000
+            si.lpMaximumApplicationAddress = 0x7FFFFFFEFFFF
+
+        si.dwActiveProcessorMask = 0xF  # 4 processors active
+        si.dwNumberOfProcessors = 4  # Simulate 4 processors to bypass anti-VM checks
+        si.dwProcessorType = 586  # PROCESSOR_INTEL_PENTIUM
+        si.dwAllocationGranularity = 0x10000
+        si.wProcessorLevel = 6  # Intel Core
+        si.wProcessorRevision = 0x5F01
 
         self.mem_write(lpSystemInfo, si.get_bytes())
         return
+
 
     @apihook('GetFileAttributes', argc=1)
     def GetFileAttributes(self, emu, argv, ctx={}):
@@ -5029,6 +5041,45 @@ class Kernel32(api.ApiHandler):
             if locale_data:
                 self.write_mem_string(locale_data, lpLCData, cw)
                 rv = len(locale_data) + cw
+
+        return rv
+
+    @apihook('GetLocaleInfoEx', argc=4)
+    def GetLocaleInfoEx(self, emu, argv, ctx={}):
+        '''
+        int GetLocaleInfoEx(
+            LPCWSTR lpLocaleName,
+            LCTYPE  LCType,
+            LPWSTR  lpLCData,
+            int     cchData
+        );
+        '''
+        lpLocaleName, LCType, lpLCData, cchData = argv
+
+        rv = 0
+        cw = 2  # Wide char for Ex version
+
+        # Read locale name if provided
+        if lpLocaleName:
+            locale_name = self.read_mem_string(lpLocaleName, cw)
+            argv[0] = locale_name
+
+        lctype = k32types.get_define(LCType, 'LOCALE_')
+        if lctype:
+            argv[1] = lctype
+            locale_data = ''
+            if lctype == 'LOCALE_SENGLISHCOUNTRYNAME':
+                locale_data = 'United States'
+            elif lctype == 'LOCALE_SENGLISHLANGUAGENAME':
+                locale_data = 'English'
+
+            if locale_data:
+                if cchData == 0:
+                    # Return required buffer size
+                    rv = len(locale_data) + 1
+                else:
+                    self.write_mem_string(locale_data, lpLCData, cw)
+                    rv = len(locale_data) + 1
 
         return rv
 
@@ -7359,3 +7410,33 @@ class Kernel32(api.ApiHandler):
         '''
         # Return UTF-8 code page
         return 65001
+
+    @apihook('GetUserDefaultLocaleName', argc=2)
+    def GetUserDefaultLocaleName(self, emu, argv, ctx={}):
+        '''
+        int GetUserDefaultLocaleName(
+            LPWSTR lpLocaleName,
+            int    cchLocaleName
+        );
+        '''
+        lpLocaleName, cchLocaleName = argv
+
+        # Default locale name for US English
+        locale_name = 'en-US'
+        locale_name_with_null = locale_name + '\x00'
+        encoded = locale_name_with_null.encode('utf-16le')
+
+        # Return value is the number of characters including null terminator
+        rv = len(locale_name_with_null)
+
+        if lpLocaleName == 0 or cchLocaleName == 0:
+            emu.set_last_error(windefs.ERROR_INSUFFICIENT_BUFFER)
+            return 0
+
+        if cchLocaleName < rv:
+            emu.set_last_error(windefs.ERROR_INSUFFICIENT_BUFFER)
+            return 0
+
+        self.mem_write(lpLocaleName, encoded)
+        emu.set_last_error(windefs.ERROR_SUCCESS)
+        return rv

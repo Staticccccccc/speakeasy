@@ -3,6 +3,7 @@
 import os
 import ntpath
 import hashlib
+import random
 
 from speakeasy.profiler import Run
 from speakeasy.windows.winemu import WindowsEmulator
@@ -150,6 +151,9 @@ class WinKernelEmulator(WindowsEmulator, IoManager):
         self.map_pe(pe, mod_name=mod_name, emu_path=emu_path)
         self.mem_write(pe.base, pe.mapped_image)
 
+        # Initialize security cookie for stack protection (/GS)
+        self.init_security_cookie(pe)
+
         # Strings the initial buffer so that we can detect decoded strings later on
         if self.profiler and self.do_strings:
 
@@ -187,6 +191,39 @@ class WinKernelEmulator(WindowsEmulator, IoManager):
                                                  'little'))
 
         return pe
+
+    def init_security_cookie(self, pe):
+        """
+        Initialize the __security_cookie global variable for stack protection.
+        This is required for proper emulation of binaries compiled with /GS.
+        
+        The security cookie is used by Windows binaries to detect stack buffer
+        overflows. At function entry, the cookie is XORed with EBP/RBP and 
+        stored on the stack. At function exit, this value is XORed with EBP/RBP
+        again and compared with the original cookie. If they don't match,
+        __report_gsfailure is called.
+        """
+        cookie_addr = pe.get_security_cookie_address()
+        if cookie_addr is None:
+            return
+        
+        # Generate a random cookie value similar to what Windows does
+        # The value should not be 0 or predictable
+        if self.get_arch() == _arch.ARCH_X86:
+            # 32-bit: use a non-zero 32-bit value with high bit set
+            cookie_value = random.getrandbits(32) | 0x80000000
+            cookie_bytes = cookie_value.to_bytes(4, 'little')
+        else:
+            # 64-bit: use a non-zero 64-bit value with high bit set
+            cookie_value = random.getrandbits(64) | 0x8000000000000000
+            cookie_bytes = cookie_value.to_bytes(8, 'little')
+        
+        # Write the cookie value to the global variable address
+        try:
+            self.mem_write(cookie_addr, cookie_bytes)
+            self.log_info(f'Initialized security cookie at 0x{cookie_addr:x} = 0x{cookie_value:x}')
+        except Exception as e:
+            self.log_warning(f'Failed to initialize security cookie: {e}')
 
     def pool_alloc(self, pooltype, size, tag='None'):
         """

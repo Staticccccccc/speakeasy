@@ -360,6 +360,21 @@ class PeFile(pefile.PE):
 
         return
 
+    def get_security_cookie_address(self):
+        """
+        Get the address of __security_cookie from Load Config Directory.
+        This is used for stack protection (/GS) support.
+        Returns None if not present.
+        """
+        try:
+            if hasattr(self, 'DIRECTORY_ENTRY_LOAD_CONFIG'):
+                lc = self.DIRECTORY_ENTRY_LOAD_CONFIG.struct
+                if hasattr(lc, 'SecurityCookie') and lc.SecurityCookie:
+                    return lc.SecurityCookie
+        except Exception:
+            pass
+        return None
+
 class DecoyModule(PeFile):
     """
     Class that represents "decoy" modules that are loaded into emulated memory.

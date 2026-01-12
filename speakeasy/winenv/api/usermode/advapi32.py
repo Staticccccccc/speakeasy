@@ -2448,3 +2448,72 @@ class AdvApi32(api.ApiHandler):
 
         return rv
 
+    @apihook('EventRegister', argc=4)
+    def EventRegister(self, emu, argv, ctx={}):
+        '''
+        ULONG EventRegister(
+            LPCGUID         ProviderId,
+            PENABLECALLBACK EnableCallback,
+            PVOID           CallbackContext,
+            PREGHANDLE      RegHandle
+        );
+        '''
+        ProviderId, EnableCallback, CallbackContext, RegHandle = argv
+
+        # Generate a dummy registration handle for the event provider
+        hReg = self.get_handle()
+
+        # Write the handle to the output parameter if provided
+        if RegHandle:
+            self.mem_write(RegHandle, hReg.to_bytes(self.get_ptr_size(), 'little'))
+
+        return windefs.ERROR_SUCCESS
+
+    @apihook('EventSetInformation', argc=5)
+    def EventSetInformation(self, emu, argv, ctx={}):
+        '''
+        ULONG EventSetInformation(
+            REGHANDLE        RegHandle,
+            EVENT_INFO_CLASS InformationClass,
+            PVOID            EventInformation,
+            ULONG            InformationLength
+        );
+        '''
+        # RegHandle is 64-bit, takes 2 slots on x86
+        return windefs.ERROR_SUCCESS
+
+    @apihook('EventUnregister', argc=2)
+    def EventUnregister(self, emu, argv, ctx={}):
+        '''
+        ULONG EventUnregister(
+          REGHANDLE RegHandle
+        );
+        '''
+        return windefs.ERROR_SUCCESS
+
+    @apihook('EventWrite', argc=5)
+    def EventWrite(self, emu, argv, ctx={}):
+        '''
+        ULONG EventWrite(
+          REGHANDLE              RegHandle,
+          PCEVENT_DESCRIPTOR     EventDescriptor,
+          ULONG                  UserDataCount,
+          PEVENT_DATA_DESCRIPTOR UserData
+        );
+        '''
+        return windefs.ERROR_SUCCESS
+
+    @apihook('EventWriteTransfer', argc=7)
+    def EventWriteTransfer(self, emu, argv, ctx={}):
+        '''
+        ULONG EventWriteTransfer(
+          REGHANDLE              RegHandle,
+          PCEVENT_DESCRIPTOR     EventDescriptor,
+          LPCGUID                ActivityId,
+          LPCGUID                RelatedActivityId,
+          ULONG                  UserDataCount,
+          PEVENT_DATA_DESCRIPTOR UserData
+        );
+        '''
+        return windefs.ERROR_SUCCESS
+
