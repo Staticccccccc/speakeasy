@@ -252,6 +252,27 @@ class Ntdll(api.ApiHandler):
 
         return rv
 
+    @apihook('NtDelayExecution', argc=2)
+    def NtDelayExecution(self, emu, argv, ctx={}):
+        '''
+        NTSYSAPI
+        NTSTATUS
+        NtDelayExecution(
+            BOOLEAN        Alertable,
+            PLARGE_INTEGER DelayInterval
+        );
+        '''
+        alertable, delay_interval = argv
+
+        # In an emulator, we don't actually delay execution.
+        # Just return success status.
+        # Other documented return status are:
+        #      STATUS_ALERTED = 0x00000101
+        #      STATUS_USER_APC = 0x000000C0
+        rv = ddk.STATUS_SUCCESS
+
+        return rv
+
     @apihook('RtlComputeCrc32', argc=3)
     def RtlComputeCrc32(self, emu, argv, ctx={}):
         '''

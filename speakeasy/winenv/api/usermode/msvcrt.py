@@ -698,6 +698,30 @@ class Msvcrt(api.ApiHandler):
 
         return self.rand_int
 
+    @apihook('rand_s', argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def rand_s(self, emu, argv, ctx={}):
+        """
+        errno_t rand_s(unsigned int* randomValue);
+        """
+
+        randomValue, = argv
+
+        # If the input pointer is NULL, return EINVAL
+        if not randomValue:
+            return EINVAL
+
+        # Generate a pseudo-random unsigned int (0 to UINT_MAX)
+        self.rand_int += 1
+        # Use a simple pseudo-random generation based on the internal counter
+        # Mask to ensure it fits in an unsigned 32-bit integer
+        rand_val = (self.rand_int * 1103515245 + 12345) & 0xFFFFFFFF
+
+        # Write the random value to the provided pointer
+        self.mem_write(randomValue, rand_val.to_bytes(4, 'little'))
+
+        # Return 0 on success
+        return 0
+
     @apihook('__set_app_type', argc=1, conv=e_arch.CALL_CONV_CDECL)
     def __set_app_type(self, emu, argv, ctx={}):
         """
