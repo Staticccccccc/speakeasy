@@ -1589,6 +1589,135 @@ class Kernel32(api.ApiHandler):
 
         return rv
 
+    @apihook('GetThreadPreferredUILanguages', argc=4)
+    def GetThreadPreferredUILanguages(self, emu, argv, ctx={}):
+        '''
+        BOOL GetThreadPreferredUILanguages(
+          DWORD   dwFlags,
+          PULONG  pulNumLanguages,
+          PZZWSTR pwszLanguagesBuffer,
+          PULONG  pcchLanguagesBuffer
+        );
+        '''
+        (dwFlags, pulNumLanguages, pwszLanguagesBuffer,
+         pcchLanguagesBuffer) = argv
+        
+        rv = 1 # Success
+        
+        # We'll just say we have 1 language, "en-US"
+        lang = "en-US\0\0"
+        lang_bytes = lang.encode('utf-16le')
+        needed_len = len(lang) # Check documentation: is it chars or bytes? 
+                               # pulNumLanguages receives number of strings.
+                               # pcchLanguagesBuffer receives size in characters.
+                               # Buffer format: null-delimited, double-null terminated.
+
+        if pulNumLanguages:
+            self.mem_write(pulNumLanguages, (1).to_bytes(4, 'little'))
+        
+        # If they just want the size
+        if not pwszLanguagesBuffer and pcchLanguagesBuffer:
+             self.mem_write(pcchLanguagesBuffer, (needed_len).to_bytes(4, 'little'))
+             return 1
+
+        # If they provided a buffer
+        if pwszLanguagesBuffer and pcchLanguagesBuffer:
+             # Read provided size
+             size_ptr = self.mem_read(pcchLanguagesBuffer, 4)
+             size = int.from_bytes(size_ptr, 'little')
+             
+             if size < needed_len:
+                 return 0 # ERROR_INSUFFICIENT_BUFFER
+             
+             self.mem_write(pwszLanguagesBuffer, lang_bytes)
+             self.mem_write(pcchLanguagesBuffer, (needed_len).to_bytes(4, 'little'))
+        
+        return rv
+
+    @apihook('EnumCalendarInfoW', argc=4)
+    def EnumCalendarInfoW(self, emu, argv, ctx={}):
+        '''
+        BOOL EnumCalendarInfoW(
+          CALINFO_ENUMPROCW pCalInfoEnumProc,
+          LCID              Locale,
+          CALID             Calendar,
+          CALTYPE           CalType
+        );
+        '''
+        pCalInfoEnumProc, Locale, Calendar, CalType = argv
+        
+        # Trigger callback once with a dummy string "1" (Gregorian)
+        # Callback signature: BOOL for return, LPWSTR for arg
+        if pCalInfoEnumProc:
+             # Create string "1"
+             s = "1\0\0"
+             s_ptr = self.mem_alloc(len(s.encode('utf-16le')), tag='api.EnumCalendarInfoW')
+             self.write_mem_string(s, s_ptr, 2)
+             
+             self.setup_callback(pCalInfoEnumProc, (s_ptr,), caller_argv=argv)
+
+        return 1
+
+    @apihook('MulDiv', argc=3)
+    def MulDiv(self, emu, argv, ctx={}):
+        '''
+        int MulDiv(
+          int nNumber,
+          int nNumerator,
+          int nDenominator
+        );
+        '''
+        nNumber, nNumerator, nDenominator = argv
+        
+        if nDenominator == 0:
+            return -1
+            
+        # Helper to treat as signed 32-bit
+        def to_signed(n):
+            return n - 0x100000000 if n >= 0x80000000 else n
+            
+        a = to_signed(nNumber)
+        b = to_signed(nNumerator)
+        c = to_signed(nDenominator)
+        
+        # Perform calculation
+        res = (a * b) / c
+        
+        # Rounding (matches standard behavior roughly)
+        if res >= 0:
+            ret = int(res + 0.5)
+        else:
+            ret = int(res - 0.5)
+            
+        # Check overflow (return -1)
+        if ret > 2147483647 or ret < -2147483648:
+             return -1
+             
+        # Convert back to unsigned 32-bit for return if needed, 
+        # but speakeasy handles signed returns fine usually.
+        # Let's mask it to be safe for register writing.
+        return ret & 0xFFFFFFFF
+
+    @apihook('GlobalAddAtomW', argc=1)
+    def GlobalAddAtomW(self, emu, argv, ctx={}):
+        '''
+        ATOM GlobalAddAtomW(
+          LPCWSTR lpString
+        );
+        '''
+        lpString, = argv
+        
+        # Valid atom range 0xC000 - 0xFFFF
+        rv = 0xC000 
+        
+        if lpString:
+             s = self.read_mem_string(lpString, 2) # Wide string
+             if s:
+                 # Simple deterministic hash to get a value within the atom integer range
+                 rv += (hash(s) & 0x3FFF)
+        
+        return rv
+
     @apihook('GetThreadId', argc=1)
     def GetThreadId(self, emu, argv, ctx={}):
         """
@@ -1764,6 +1893,57 @@ class Kernel32(api.ApiHandler):
 
         rv = 0xFFFFFFFF & ((build << 16) | minor << 8 | major)
 
+        return rv
+
+    @apihook('GetLogicalProcessorInformation', argc=2)
+    def GetLogicalProcessorInformation(self, emu, argv, ctx={}):
+        '''
+        BOOL GetLogicalProcessorInformation(
+          PSYSTEM_LOGICAL_PROCESSOR_INFORMATION Buffer,
+          PDWORD                                ReturnedLength
+        );
+        '''
+        Buffer, ReturnedLength = argv
+        rv = 1 # TRUE
+
+        ptr_size = self.get_ptr_size()
+        
+        # Calculate struct size
+        # ULONG_PTR ProcessorMask
+        # LOGICAL_PROCESSOR_RELATIONSHIP Relationship (4 bytes)
+        # padding (4 bytes if x64)
+        # Union (16 bytes)
+        struct_size = ptr_size + 4 + 16
+        if ptr_size == 8:
+            struct_size += 4 # Padding for alignment
+
+        current_len = 0
+        if ReturnedLength:
+            current_len = int.from_bytes(self.mem_read(ReturnedLength, 4), 'little')
+
+        if not Buffer or current_len < struct_size:
+            if ReturnedLength:
+                self.mem_write(ReturnedLength, struct_size.to_bytes(4, 'little'))
+            emu.set_last_error(windefs.ERROR_INSUFFICIENT_BUFFER)
+            return 0 # FALSE
+        
+        # Write one entry: RelationProcessorCore (0)
+        # Mask = 1
+        # Relationship = 0
+        # Union (Flags) = 0
+        
+        data = b''
+        data += (1).to_bytes(ptr_size, 'little') # ProcessorMask
+        data += (0).to_bytes(4, 'little')        # Relationship
+        
+        if ptr_size == 8:
+            data += b'\x00' * 4 # Padding
+
+        data += b'\x00' * 16 # Union (Reserved/Flags)
+
+        self.mem_write(Buffer, data)
+        self.mem_write(ReturnedLength, struct_size.to_bytes(4, 'little'))
+        
         return rv
 
     @apihook('GetLastError', argc=0)

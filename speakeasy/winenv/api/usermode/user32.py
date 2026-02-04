@@ -175,6 +175,26 @@ class User32(api.ApiHandler):
 
         return atom
 
+    @apihook('RegisterClassW', argc=1)
+    def RegisterClassW(self, emu, argv, ctx={}):
+        '''
+        ATOM RegisterClassW(
+            const WNDCLASSW *lpWndClass
+        );
+        '''
+        lpWndClass, = argv
+        wc = windefs.WNDCLASS(emu.get_ptr_size())
+        wc = self.mem_cast(wc, lpWndClass)
+
+        cn = None
+        cw = 2 # Wide
+        if wc.lpszClassName:
+            cn = self.read_mem_string(wc.lpszClassName, cw)
+
+        atom = self.sessman.create_window_class(wc, cn)
+
+        return atom
+
     @apihook('RegisterClassExW', argc=1)
     def RegisterClassExW(self, emu, argv, ctx={}):
         '''
@@ -655,6 +675,43 @@ class User32(api.ApiHandler):
             return 12
         return 0
 
+    @apihook('GetKeyboardLayout', argc=1)
+    def GetKeyboardLayout(self, emu, argv, ctx={}):
+        '''
+        HKL GetKeyboardLayout(
+          DWORD idThread
+        );
+        '''
+        idThread, = argv
+        # Return default locale identifier (US English: 0x04090409)
+        return 0x04090409
+
+    @apihook('GetClassInfoW', argc=3)
+    def GetClassInfoW(self, emu, argv, ctx={}):
+        '''
+        BOOL GetClassInfoW(
+          HINSTANCE   hInstance,
+          LPCWSTR     lpClassName,
+          LPWNDCLASSW lpWndClass
+        );
+        '''
+        hInstance, lpClassName, lpWndClass = argv
+        
+        cn = None
+        if lpClassName < 0x10000:
+            pass
+        else:
+            cn = self.read_mem_string(lpClassName, 2)
+        
+        if not cn:
+            return 0
+
+        wc = self.sessman.get_window_class(cn)
+        if hasattr(wc, 'wclass'):
+            return 1
+            
+        return 0
+
     @apihook('GetSystemMetrics', argc=1)
     def GetSystemMetrics(self, emu, argv, ctx={}):
         """
@@ -757,6 +814,19 @@ class User32(api.ApiHandler):
         rv += (hash(s) & 0x3FFF)
 
         return rv
+
+    @apihook('RegisterDeviceNotificationW', argc=3)
+    def RegisterDeviceNotificationW(self, emu, argv, ctx={}):
+        '''
+        HDEVNOTIFY RegisterDeviceNotificationW(
+          HANDLE hRecipient,
+          LPVOID NotificationFilter,
+          DWORD  Flags
+        );
+        '''
+        hRecipient, NotificationFilter, Flags = argv
+
+        return self.get_handle()
 
     @apihook('SetProcessDpiAwarenessContext', argc=1)
     def SetProcessDpiAwarenessContext(self, emu, argv, ctx={}):
@@ -1205,7 +1275,24 @@ class User32(api.ApiHandler):
         fmt_cnt = self.get_va_arg_count(fmt_str)
 
         vargs = self.va_args(va_list, fmt_cnt)
-        fin = self.do_str_format(fmt_str, vargs)
+        fin = self.do_str_format(fmt_str, vargs, is_wide=True)
+        self.write_mem_string(fin, buf, cw)
+        argv.clear()
+        argv.append(fin)
+        argv.append(fmt_str)
+        return len(fin)
+
+    @apihook('wsprintfW', argc=_arch.VAR_ARGS, conv=_arch.CALL_CONV_CDECL)
+    def wsprintfW(self, emu, argv, ctx={}):
+        buf, fmt = emu.get_func_argv(_arch.CALL_CONV_CDECL, 2)[:2]
+        cw = 2
+        fmt_str = self.read_mem_string(fmt, cw)
+        fmt_cnt = self.get_va_arg_count(fmt_str)
+
+        all_args = emu.get_func_argv(_arch.CALL_CONV_CDECL, 2 + fmt_cnt)
+        vargs = all_args[2:]
+
+        fin = self.do_str_format(fmt_str, vargs, is_wide=True)
         self.write_mem_string(fin, buf, cw)
         argv.clear()
         argv.append(fin)
@@ -1385,6 +1472,22 @@ class User32(api.ApiHandler):
           HWND hWnd,
           int  nIndex,
           LONG dwNewLong
+        );
+        """
+        hWnd, nIndex, dwNewLong = argv
+        if ((self.get_ptr_size() == 4 and nIndex == 0xfffffffc) or
+            (self.get_ptr_size() == 8 and nIndex == 0xfffffffffffffffc)):
+            self.wndprocs[hWnd] = dwNewLong
+
+        return 1
+
+    @apihook('SetWindowLongPtrW', argc=3)
+    def SetWindowLongPtrW(self, emu, argv, ctx={}):
+        """
+        LONG_PTR SetWindowLongPtrW(
+          HWND     hWnd,
+          int      nIndex,
+          LONG_PTR dwNewLong
         );
         """
         hWnd, nIndex, dwNewLong = argv

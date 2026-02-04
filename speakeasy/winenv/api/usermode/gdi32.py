@@ -92,6 +92,18 @@ class GDI32(api.ApiHandler):
         """
         return 16
 
+    @apihook('GetSystemPaletteEntries', argc=4)
+    def GetSystemPaletteEntries(self, emu, argv, ctx={}):
+        """
+        UINT GetSystemPaletteEntries(
+          HDC              hdc,
+          UINT             iStart,
+          UINT             cEntries,
+          LPPALETTEENTRY   pPalEntries
+        );
+        """
+        return 0
+
     @apihook('GdiSetBatchLimit', argc=1)
     def GdiSetBatchLimit(self, emu, argv, ctx={}):
         """
@@ -184,6 +196,51 @@ class GDI32(api.ApiHandler):
         );
         """
         return 0
+
+    @apihook('CreatePalette', argc=1)
+    def CreatePalette(self, emu, argv, ctx={}):
+        """
+        HPALETTE CreatePalette(
+          const LOGPALETTE *plpal
+        );
+        """
+        return self.get_handle()
+
+    @apihook('GetObjectW', argc=3)
+    def GetObjectW(self, emu, argv, ctx={}):
+        """
+        int GetObjectW(
+          HGDIOBJ hgdiobj,
+          int     cbBuffer,
+          LPVOID  lpvObject
+        );
+        """
+        hgdiobj, cbBuffer, lpvObject = argv
+        
+        # We don't track object types/sizes in this simple emulation yet.
+        # We'll return a size large enough for common structures (BITMAP, LOGPEN, etc.)
+        # BITMAP is ~24-32 bytes.
+        # LOGFONTW is 92 bytes.
+        
+        # If lpvObject is NULL, return the bytes required. 
+        # Since we don't know which object it is, we'll mimic a BITMAP size or just return cbBuffer if non-zero?
+        # A safe bet for unknown objects often accessed by malware (like bitmaps) is standard BITMAP size.
+        
+        # 32-bit: 24 bytes, 64-bit: 32 bytes (approx)
+        ptr_size = self.get_ptr_size()
+        default_size = 24 if ptr_size == 4 else 32
+        
+        if not lpvObject:
+            return default_size
+            
+        if cbBuffer == 0:
+            return 0
+            
+        # Write zeros to the buffer
+        count = min(cbBuffer, default_size)
+        self.mem_write(lpvObject, b'\x00' * count)
+        
+        return count
 
     @apihook('GetDIBits', argc=7)
     def GetDIBits(self, emu, argv, ctx={}):

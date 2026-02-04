@@ -39,3 +39,7 @@ class Comctl32(api.ApiHandler):
         """
 
         return
+
+    @apihook('ordinal_17', argc=0, ordinal=17)
+    def ordinal_17(self, emu, argv, ctx={}):
+        return 0

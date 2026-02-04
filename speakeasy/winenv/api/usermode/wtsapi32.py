@@ -90,3 +90,16 @@ class WtsApi32(api.ApiHandler):
         self.mem_free(pMemory)
 
         return rv
+
+    @apihook('WTSRegisterSessionNotification', argc=2, conv=_arch.CALL_CONV_STDCALL)
+    def WTSRegisterSessionNotification(self, emu, argv, ctx={}):
+        """
+        BOOL WTSRegisterSessionNotification(
+          HWND  hWnd,
+          DWORD dwFlags
+        );
+        """
+        hWnd, dwFlags = argv
+        rv = 1
+
+        return rv

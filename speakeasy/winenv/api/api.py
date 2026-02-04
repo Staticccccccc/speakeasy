@@ -388,7 +388,7 @@ class ApiHandler(object):
         else:
             run.api_callbacks.append((None, func, args))
 
-    def do_str_format(self, string, argv):
+    def do_str_format(self, string, argv, is_wide=False):
         """
         Format a string similar to msvcrt.printf
         """
@@ -411,7 +411,12 @@ class ApiHandler(object):
 
             if inside_fmt:
                 if c == 'S':
-                    s = self.read_wide_string(args.pop(0))
+                    if is_wide:
+                        # In Wide functions, %S means ANSI string
+                        s = self.read_string(args.pop(0))
+                    else:
+                        # In ANSI functions, %S means Wide string
+                        s = self.read_wide_string(args.pop(0))
                     new_fmts.append(s)
                     new[i] = 's'
                     inside_fmt = False
@@ -423,7 +428,12 @@ class ApiHandler(object):
                         curr_fmt = ''
                         new_fmts.append(s)
                     else:
-                        s = self.read_string(args.pop(0))
+                        if is_wide:
+                            # In Wide functions, %s means Wide string
+                            s = self.read_wide_string(args.pop(0))
+                        else:
+                            # In ANSI functions, %s means ANSI string
+                            s = self.read_string(args.pop(0))
                         new_fmts.append(s)
                 elif c in ('x', 'X', 'd', 'u', 'i'):
                     if curr_fmt.startswith('ll'):

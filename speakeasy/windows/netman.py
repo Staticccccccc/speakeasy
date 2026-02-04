@@ -199,12 +199,18 @@ class WininetRequest(WininetComponent):
         if self.response:
             return self.response
 
+        # Default to empty response
+        self.response = BytesIO(b'')
+
+        if not cfg:
+            return self.response
+
         http = cfg.get('http')
         if not http:
-            raise NetworkEmuError('No HTTP configuration supplied')
+            return self.response
         resps = http.get('responses')
         if not resps:
-            raise NetworkEmuError('No HTTP responses supplied')
+            return self.response
 
         self.response = None
         for res in resps:
@@ -235,6 +241,9 @@ class WininetRequest(WininetComponent):
                         default_resp_path = normalize_response_path(default_resp_path)
                         with open(default_resp_path, 'rb') as f:
                             self.response = BytesIO(f.read())
+
+        if not self.response:
+             self.response = BytesIO(b'')
 
         return self.response
 

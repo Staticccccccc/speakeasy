@@ -660,6 +660,9 @@ class Ntoskrnl(api.ApiHandler):
                     buf_ptr += len(data)
 
                 nts = ddk.STATUS_SUCCESS
+        
+        elif sysclass == 0xe3:
+             nts = ddk.STATUS_SUCCESS
 
         else:
             raise ApiEmuError('Unsupported information class: 0x%x'
@@ -3351,3 +3354,31 @@ class Ntoskrnl(api.ApiHandler):
         if thread:
             return thread.get_tid()
         return 0
+
+    @apihook('EtwRegister', argc=4)
+    def EtwRegister(self, emu, argv, ctx={}):
+        """
+        NTSTATUS EtwRegister(
+            LPCGUID            ProviderId,
+            PENABLECALLBACK    EnableCallback,
+            PVOID              CallbackContext,
+            PREGHANDLE         RegHandle
+        );
+        """
+        ProviderId, EnableCallback, CallbackContext, RegHandle = argv
+        
+        # Return a dummy handle
+        if RegHandle:
+            self.mem_write(RegHandle, (1).to_bytes(8, 'little'))
+            
+        return ddk.STATUS_SUCCESS
+
+    @apihook('EtwUnregister', argc=1)
+    def EtwUnregister(self, emu, argv, ctx={}):
+        """
+        NTSTATUS EtwUnregister(
+            REGHANDLE RegHandle
+        );
+        """
+        RegHandle, = argv
+        return ddk.STATUS_SUCCESS

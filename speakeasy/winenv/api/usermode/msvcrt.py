@@ -367,6 +367,31 @@ class Msvcrt(api.ApiHandler):
 
         return envp
 
+    @apihook('_o__get_initial_wide_environment', argc=0,
+             conv=e_arch.CALL_CONV_CDECL)
+    def _o__get_initial_wide_environment(self, emu, argv, ctx={}):
+        """
+        WCHAR** _o__get_initial_wide_environment ()
+        Forward to _get_initial_wide_environment
+        """
+        return self._get_initial_wide_environment(emu, argv, ctx)
+
+    @apihook('_o___p___wargv', argc=0, conv=e_arch.CALL_CONV_CDECL)
+    def _o___p___wargv(self, emu, argv, ctx={}):
+        """
+        WCHAR*** _o___p___wargv ()
+        Forward to __p___wargv
+        """
+        return self.__p___wargv(emu, argv, ctx)
+
+    @apihook('_o___p___argc', argc=0, conv=e_arch.CALL_CONV_CDECL)
+    def _o___p___argc(self, emu, argv, ctx={}):
+        """
+        int* _o___p___argc ()
+        Forward to __p___argc
+        """
+        return self.__p___argc(emu, argv, ctx)
+
     @apihook('exit', argc=1, conv=e_arch.CALL_CONV_CDECL)
     def exit(self, emu, argv, ctx={}):
         """
@@ -1889,4 +1914,59 @@ class Msvcrt(api.ApiHandler):
         # In the emulator, we just log this and continue
         # Real behavior would unwind the stack and find exception handlers
         return
+
+    @apihook('___lc_codepage_func', argc=0, conv=e_arch.CALL_CONV_CDECL)
+    def ___lc_codepage_func(self, emu, argv, ctx={}):
+        """
+        unsigned int* ___lc_codepage_func(void);
+        """
+        ptr = self.mem_alloc(4, tag='api.codepage')
+        cp = 0  # CP_ACP
+        self.mem_write(ptr, cp.to_bytes(4, 'little'))
+        return ptr
+
+    @apihook('_wfopen', argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def _wfopen(self, emu, argv, ctx={}):
+        """
+        FILE *_wfopen(
+            const wchar_t *filename,
+            const wchar_t *mode
+        );
+        """
+        filename, mode = argv
+        
+        fn = self.read_wide_string(filename)
+        md = self.read_wide_string(mode)
+        
+        # Create a dummy FILE struct
+        fp = self.mem_alloc(8, tag='api.file')
+        
+        return fp
+
+    @apihook('_lseeki64', argc=3, conv=e_arch.CALL_CONV_CDECL)
+    def _lseeki64(self, emu, argv, ctx={}):
+        """
+        __int64 _lseeki64(
+            int fd,
+            __int64 offset,
+            int origin
+        );
+        """
+        fd, offset, origin = argv
+        # Since we don't track file state, we just return the offset to indicate success
+        return offset
+
+    @apihook('fclose', argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def fclose(self, emu, argv, ctx={}):
+        """
+        int fclose(
+            FILE *stream
+        );
+        """
+        stream, = argv
+        
+        if stream:
+            self.mem_free(stream)
+            
+        return 0
 

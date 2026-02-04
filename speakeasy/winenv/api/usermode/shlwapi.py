@@ -727,3 +727,17 @@ class Shlwapi(api.ApiHandler):
         out += '\0'
         self.write_mem_string(out, pszPath, cw)
         return 1
+
+    @apihook('IsOS', argc=1, ordinal=437)
+    def IsOS(self, emu, argv, ctx={}):
+        """
+        BOOL IsOS(
+            DWORD dwOS
+        );
+        """
+        dwOS, = argv
+        # OS_WOW6432 = 30
+        if dwOS == 30:
+            if self.get_ptr_size() == 4 and self.emu.get_arch() == e_arch.ARCH_X86:
+                return 1
+        return 1

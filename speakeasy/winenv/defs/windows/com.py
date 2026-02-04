@@ -36,6 +36,9 @@ IID_ITaskFolder = '{8CFAC062-A080-4C15-9A88-AA7C2AF80DFC}'
 IID_IRegisteredTask = '{9C86F320-DEE3-4DD1-B972-A303F26B061E}'
 IID_ITaskDefinition = '{F5BC8FC5-536D-4F77-B852-FBC1356FDEB6}'
 
+CLSID_MMDeviceEnumerator = '{BCDE0395-E52F-467C-8E3D-C4579291692E}'
+IID_IMMDeviceEnumerator = '{A95664D2-9614-4F35-A746-DE8DB63617E6}'
+
 class ComInterface(object):
     def __init__(self, iface, name, ptr_size):
         self.iface = iface(ptr_size)
@@ -466,6 +469,17 @@ class IExecAction(EmuStruct):
         self.Reserved4 = Ptr            # [19]
 
 
+class IMMDeviceEnumerator(EmuStruct):
+    def __init__(self, ptr_size):
+        super().__init__(ptr_size)
+        self.IUnknown = IUnknown
+        self.EnumAudioEndpoints = Ptr
+        self.GetDefaultAudioEndpoint = Ptr
+        self.GetDevice = Ptr
+        self.RegisterEndpointNotificationCallback = Ptr
+        self.UnregisterEndpointNotificationCallback = Ptr
+
+
 IFACE_TYPES = {'IUnknown': IUnknown,
                'IDispatch': IDispatch,
                'IMalloc':  IMalloc,
@@ -482,7 +496,8 @@ IFACE_TYPES = {'IUnknown': IUnknown,
                'IActionCollection': IActionCollection,
                'ITriggerCollection': ITriggerCollection,
                'ITaskSettings': ITaskSettings,
-               'IExecAction': IExecAction}
+               'IExecAction': IExecAction,
+               'IMMDeviceEnumerator': IMMDeviceEnumerator}
 
 
 
